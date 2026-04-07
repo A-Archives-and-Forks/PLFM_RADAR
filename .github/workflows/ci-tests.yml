@@ -1,0 +1,71 @@
+name: AERIS-10 CI
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+
+jobs:
+  # ===========================================================================
+  # Job 1: Python Host Software Tests (58 tests)
+  # radar_protocol, radar_dashboard, FT2232H connection, replay, opcodes, e2e
+  # ===========================================================================
+  python-tests:
+    name: Python Dashboard Tests (58)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest numpy h5py
+
+      - name: Run test suite
+        run: python -m pytest 9_Firmware/9_3_GUI/test_radar_dashboard.py -v --tb=short
+
+  # ===========================================================================
+  # Job 2: MCU Firmware Unit Tests (20 tests)
+  # Bug regression (15) + Gap-3 safety tests (5)
+  # ===========================================================================
+  mcu-tests:
+    name: MCU Firmware Tests (20)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y build-essential
+
+      - name: Build and run MCU tests
+        working-directory: 9_Firmware/9_1_Microcontroller/tests
+        run: make test
+
+  # ===========================================================================
+  # Job 3: FPGA RTL Regression (23 testbenches + lint)
+  # Phase 0: Vivado-style lint, Phase 1-4: unit + integration + e2e
+  # ===========================================================================
+  fpga-regression:
+    name: FPGA Regression (23 TBs + lint)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Icarus Verilog
+        run: sudo apt-get update && sudo apt-get install -y iverilog
+
+      - name: Run full FPGA regression
+        working-directory: 9_Firmware/9_2_FPGA
+        run: bash run_regression.sh
