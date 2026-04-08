@@ -459,14 +459,20 @@ def _replay_mti(decim_i: np.ndarray, decim_q: np.ndarray,
 
 def _replay_dc_notch(doppler_i: np.ndarray, doppler_q: np.ndarray,
                      width: int) -> Tuple[np.ndarray, np.ndarray]:
-    """Bit-accurate DC notch filter (matches radar_system_top.v inline)."""
+    """Bit-accurate DC notch filter (matches radar_system_top.v inline).
+
+    Dual sub-frame notch: doppler_bin[4:0] = {sub_frame, bin[3:0]}.
+    Each 16-bin sub-frame has its own DC at bin 0, so we zero bins
+    where ``bin_within_sf < width`` or ``bin_within_sf > (15 - width + 1)``.
+    """
     out_i = doppler_i.copy()
     out_q = doppler_q.copy()
     if width == 0:
         return out_i, out_q
     n_doppler = doppler_i.shape[1]
     for dbin in range(n_doppler):
-        if dbin < width or dbin > (n_doppler - 1 - width + 1):
+        bin_within_sf = dbin & 0xF
+        if bin_within_sf < width or bin_within_sf > (15 - width + 1):
             out_i[:, dbin] = 0
             out_q[:, dbin] = 0
     return out_i, out_q
