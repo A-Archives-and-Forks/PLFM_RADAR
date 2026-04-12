@@ -342,15 +342,17 @@ class RadarDashboard:
         grp_wf.pack(fill="x", pady=(0, 8))
 
         wf_params = [
-            ("Long Chirp Cycles",   0x10, "3000",  16, "0-65535, rst=3000"),
-            ("Long Listen Cycles",  0x11, "13700", 16, "0-65535, rst=13700"),
-            ("Guard Cycles",        0x12, "17540", 16, "0-65535, rst=17540"),
-            ("Short Chirp Cycles",  0x13, "50",    16, "0-65535, rst=50"),
-            ("Short Listen Cycles", 0x14, "17450", 16, "0-65535, rst=17450"),
-            ("Chirps Per Elevation", 0x15, "32",    6, "1-32, clamped"),
+            #  label                  opcode  default  bits  hint                  min   max
+            ("Long Chirp Cycles",   0x10, "3000",  16, "0-65535, rst=3000",   0,    None),
+            ("Long Listen Cycles",  0x11, "13700", 16, "0-65535, rst=13700",  0,    None),
+            ("Guard Cycles",        0x12, "17540", 16, "0-65535, rst=17540",  0,    None),
+            ("Short Chirp Cycles",  0x13, "50",    16, "0-65535, rst=50",     0,    None),
+            ("Short Listen Cycles", 0x14, "17450", 16, "0-65535, rst=17450",  0,    None),
+            ("Chirps Per Elevation", 0x15, "32",    6, "1-32, clamped",       1,    32),
         ]
-        for label, opcode, default, bits, hint in wf_params:
-            self._add_param_row(grp_wf, label, opcode, default, bits, hint)
+        for label, opcode, default, bits, hint, min_v, max_v in wf_params:
+            self._add_param_row(grp_wf, label, opcode, default, bits, hint,
+                                min_val=min_v, max_val=max_v)
 
         # ── Right column: Detection (CFAR) + Custom ───────────────────
         right = ttk.Frame(outer)
@@ -407,7 +409,8 @@ class RadarDashboard:
         outer.rowconfigure(0, weight=1)
 
     def _add_param_row(self, parent, label: str, opcode: int,
-                       default: str, bits: int, hint: str):
+                       default: str, bits: int, hint: str,
+                       min_val: int = 0, max_val: int | None = None):
         """Add a single parameter row: label, entry, hint, Set button with validation."""
         row = ttk.Frame(parent)
         row.pack(fill="x", pady=2)
@@ -419,20 +422,22 @@ class RadarDashboard:
                   font=("Menlo", 9)).pack(side="left")
         ttk.Button(row, text="Set",
                    command=lambda: self._send_validated(
-                       opcode, var, bits=bits)).pack(side="right")
+                       opcode, var, bits=bits,
+                       min_val=min_val, max_val=max_val)).pack(side="right")
 
-    def _send_validated(self, opcode: int, var: tk.StringVar, bits: int):
-        """Parse, clamp to bit-width, send command, and update the entry."""
+    def _send_validated(self, opcode: int, var: tk.StringVar, bits: int,
+                        min_val: int = 0, max_val: int | None = None):
+        """Parse, clamp to [min_val, max_val], send command, and update the entry."""
         try:
             raw = int(var.get())
         except ValueError:
             log.error(f"Invalid value for opcode 0x{opcode:02X}: {var.get()!r}")
             return
-        max_val = (1 << bits) - 1
-        clamped = max(0, min(raw, max_val))
+        ceiling = (1 << bits) - 1 if max_val is None else max_val
+        clamped = max(min_val, min(raw, ceiling))
         if clamped != raw:
             log.warning(f"Value {raw} clamped to {clamped} "
-                        f"({bits}-bit max={max_val}) for opcode 0x{opcode:02X}")
+                        f"(range {min_val}-{ceiling}) for opcode 0x{opcode:02X}")
             var.set(str(clamped))
         self._send_cmd(opcode, clamped)
 
