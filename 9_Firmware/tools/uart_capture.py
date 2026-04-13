@@ -39,6 +39,7 @@ try:
     import serial
     import serial.tools.list_ports
 except ImportError:
+    print("ERROR: pyserial not installed. Run: pip install pyserial", file=sys.stderr)
     sys.exit(1)
 
 # ---------------------------------------------------------------------------
@@ -248,7 +249,8 @@ def capture(port, baud, log_file, filter_subsys, errors_only, use_color):
             stopbits=serial.STOPBITS_ONE,
             timeout=0.1,  # 100ms read timeout for responsive Ctrl-C
         )
-    except serial.SerialException:
+    except serial.SerialException as e:
+        print(f"ERROR: Could not open {port}: {e}", file=sys.stderr)
         sys.exit(1)
 
     print(f"Connected to {port} at {baud} baud")
@@ -376,6 +378,10 @@ def main():
     if not port:
         port = auto_detect_port()
         if not port:
+            print(
+                "ERROR: No serial port detected. Use -p to specify, or --list to see ports.",
+                file=sys.stderr,
+            )
             sys.exit(1)
 
     # Resolve log file
