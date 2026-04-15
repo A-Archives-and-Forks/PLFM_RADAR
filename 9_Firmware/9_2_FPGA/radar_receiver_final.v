@@ -102,9 +102,9 @@ wire [7:0] gc_saturation_count;  // Diagnostic: per-frame clipped sample counter
 wire [7:0] gc_peak_magnitude;    // Diagnostic: per-frame peak magnitude
 wire [3:0] gc_current_gain;      // Diagnostic: effective gain_shift
 
-// Reference signals for the processing chain
-wire [15:0] long_chirp_real, long_chirp_imag;
-wire [15:0] short_chirp_real, short_chirp_imag;
+// Reference signal for the processing chain (carries long OR short ref
+// depending on use_long_chirp — selected by chirp_memory_loader_param)
+wire [15:0] ref_chirp_real, ref_chirp_imag;
 
 // ========== DOPPLER PROCESSING SIGNALS ==========
 wire [31:0] range_data_32bit;
@@ -292,7 +292,8 @@ end
 // sample_addr_wire removed — was unused implicit wire (synthesis warning)
 
 // 4. CRITICAL: Reference Chirp Latency Buffer
-// This aligns reference data with FFT output (2159 cycle delay)
+// This aligns reference data with FFT output (3187 cycle delay)
+// TODO: verify empirically during hardware bring-up with correlation test
 wire [15:0] delayed_ref_i, delayed_ref_q;
 wire mem_ready_delayed;
 
@@ -308,11 +309,10 @@ latency_buffer #(
     .valid_out(mem_ready_delayed)
 );
 
-// Assign delayed reference signals
-assign long_chirp_real = delayed_ref_i;
-assign long_chirp_imag = delayed_ref_q;
-assign short_chirp_real = delayed_ref_i;
-assign short_chirp_imag = delayed_ref_q;
+// Assign delayed reference signals (single pair — chirp_memory_loader_param
+// selects long/short reference upstream via use_long_chirp)
+assign ref_chirp_real = delayed_ref_i;
+assign ref_chirp_imag = delayed_ref_q;
 
 // 5. Dual Chirp Matched Filter
 
@@ -336,10 +336,8 @@ matched_filter_multi_segment mf_dual (
     .mc_new_chirp(mc_new_chirp),
     .mc_new_elevation(mc_new_elevation),
     .mc_new_azimuth(mc_new_azimuth),
-	 .long_chirp_real(delayed_ref_i),      // From latency buffer
-    .long_chirp_imag(delayed_ref_q),
-    .short_chirp_real(delayed_ref_i),     // Same for short chirp
-    .short_chirp_imag(delayed_ref_q),
+	 .ref_chirp_real(delayed_ref_i),       // From latency buffer (long or short ref)
+    .ref_chirp_imag(delayed_ref_q),
     .segment_request(segment_request),
     .mem_request(mem_request),
 	 .sample_addr_out(sample_addr_from_chain),

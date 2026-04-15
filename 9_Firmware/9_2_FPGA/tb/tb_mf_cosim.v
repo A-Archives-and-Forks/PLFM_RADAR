@@ -88,10 +88,8 @@ reg [15:0] adc_data_i;
 reg [15:0] adc_data_q;
 reg        adc_valid;
 reg [5:0]  chirp_counter;
-reg [15:0] long_chirp_real;
-reg [15:0] long_chirp_imag;
-reg [15:0] short_chirp_real;
-reg [15:0] short_chirp_imag;
+reg [15:0] ref_chirp_real;
+reg [15:0] ref_chirp_imag;
 
 wire signed [15:0] range_profile_i;
 wire signed [15:0] range_profile_q;
@@ -108,10 +106,8 @@ matched_filter_processing_chain dut (
     .adc_data_q(adc_data_q),
     .adc_valid(adc_valid),
     .chirp_counter(chirp_counter),
-    .long_chirp_real(long_chirp_real),
-    .long_chirp_imag(long_chirp_imag),
-    .short_chirp_real(short_chirp_real),
-    .short_chirp_imag(short_chirp_imag),
+    .ref_chirp_real(ref_chirp_real),
+    .ref_chirp_imag(ref_chirp_imag),
     .range_profile_i(range_profile_i),
     .range_profile_q(range_profile_q),
     .range_profile_valid(range_profile_valid),
@@ -157,10 +153,8 @@ task apply_reset;
         adc_data_q <= 16'd0;
         adc_valid <= 1'b0;
         chirp_counter <= 6'd0;
-        long_chirp_real <= 16'd0;
-        long_chirp_imag <= 16'd0;
-        short_chirp_real <= 16'd0;
-        short_chirp_imag <= 16'd0;
+        ref_chirp_real <= 16'd0;
+        ref_chirp_imag <= 16'd0;
         repeat(4) @(posedge clk);
         reset_n <= 1'b1;
         @(posedge clk);
@@ -201,18 +195,16 @@ initial begin
         @(posedge clk);
         adc_data_i      <= sig_mem_i[i];
         adc_data_q      <= sig_mem_q[i];
-        long_chirp_real  <= ref_mem_i[i];
-        long_chirp_imag  <= ref_mem_q[i];
-        short_chirp_real <= 16'd0;
-        short_chirp_imag <= 16'd0;
+        ref_chirp_real  <= ref_mem_i[i];
+        ref_chirp_imag  <= ref_mem_q[i];
         adc_valid       <= 1'b1;
     end
     @(posedge clk);
     adc_valid <= 1'b0;
     adc_data_i <= 16'd0;
     adc_data_q <= 16'd0;
-    long_chirp_real <= 16'd0;
-    long_chirp_imag <= 16'd0;
+    ref_chirp_real <= 16'd0;
+    ref_chirp_imag <= 16'd0;
 
     $display("All samples fed. Waiting for processing...");
 

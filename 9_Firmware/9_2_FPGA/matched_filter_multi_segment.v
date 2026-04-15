@@ -18,10 +18,9 @@ module matched_filter_multi_segment (
     input wire mc_new_elevation,    // Toggle for new elevation (32)
     input wire mc_new_azimuth,      // Toggle for new azimuth (50)
     
-    input wire [15:0] long_chirp_real,
-    input wire [15:0] long_chirp_imag,
-    input wire [15:0] short_chirp_real,
-    input wire [15:0] short_chirp_imag,
+    // Reference chirp (upstream memory loader selects long/short via use_long_chirp)
+    input wire [15:0] ref_chirp_real,
+    input wire [15:0] ref_chirp_imag,
     
     // Memory system interface
     output reg [1:0] segment_request,
@@ -244,6 +243,7 @@ always @(posedge clk or negedge reset_n) begin
                     if (!use_long_chirp) begin
                         if (chirp_samples_collected >= SHORT_CHIRP_SAMPLES - 1) begin
                             state <= ST_ZERO_PAD;
+                            chirp_complete <= 1;  // Bug A fix: mark chirp done so ST_OUTPUT exits to IDLE
                             `ifdef SIMULATION
                             $display("[MULTI_SEG_FIXED] Short chirp: collected %d samples, starting zero-pad",
                                      chirp_samples_collected + 1);
@@ -500,11 +500,9 @@ matched_filter_processing_chain m_f_p_c(
     // Chirp Selection
     .chirp_counter(chirp_counter),
     
-    // Reference Chirp Memory Interfaces
-    .long_chirp_real(long_chirp_real),
-    .long_chirp_imag(long_chirp_imag),
-    .short_chirp_real(short_chirp_real),
-    .short_chirp_imag(short_chirp_imag),
+    // Reference Chirp Memory Interface (single pair — upstream selects long/short)
+    .ref_chirp_real(ref_chirp_real),
+    .ref_chirp_imag(ref_chirp_imag),
     
     // Output
     .range_profile_i(fft_pc_i),

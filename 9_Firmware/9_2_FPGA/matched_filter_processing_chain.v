@@ -15,7 +15,7 @@
  *   .clk, .reset_n
  *   .adc_data_i, .adc_data_q, .adc_valid      <- from input buffer
  *   .chirp_counter                              <- 6-bit frame counter
- *   .long_chirp_real/imag, .short_chirp_real/imag <- reference (time-domain)
+ *   .ref_chirp_real/imag                     <- reference (time-domain)
  *   .range_profile_i, .range_profile_q, .range_profile_valid -> output
  *   .chain_state                                -> 4-bit status
  *
@@ -48,10 +48,10 @@ module matched_filter_processing_chain (
     input wire [5:0] chirp_counter,
 
     // Reference chirp (time-domain, latency-aligned by upstream buffer)
-    input wire [15:0] long_chirp_real,
-    input wire [15:0] long_chirp_imag,
-    input wire [15:0] short_chirp_real,
-    input wire [15:0] short_chirp_imag,
+    // Upstream chirp_memory_loader_param selects long/short reference
+    // via use_long_chirp — this single pair carries whichever is active.
+    input wire [15:0] ref_chirp_real,
+    input wire [15:0] ref_chirp_imag,
 
     // Output: range profile (pulse-compressed)
     output wire signed [15:0] range_profile_i,
@@ -189,8 +189,8 @@ always @(posedge clk or negedge reset_n) begin
                 // Store first sample (signal + reference)
                 fwd_buf_i[0] <= $signed(adc_data_i);
                 fwd_buf_q[0] <= $signed(adc_data_q);
-                ref_buf_i[0] <= $signed(long_chirp_real);
-                ref_buf_q[0] <= $signed(long_chirp_imag);
+                ref_buf_i[0] <= $signed(ref_chirp_real);
+                ref_buf_q[0] <= $signed(ref_chirp_imag);
                 fwd_in_count <= 1;
                 state        <= ST_FWD_FFT;
             end
@@ -205,8 +205,8 @@ always @(posedge clk or negedge reset_n) begin
                 if (adc_valid && fwd_in_count < FFT_SIZE) begin
                     fwd_buf_i[fwd_in_count] <= $signed(adc_data_i);
                     fwd_buf_q[fwd_in_count] <= $signed(adc_data_q);
-                    ref_buf_i[fwd_in_count] <= $signed(long_chirp_real);
-                    ref_buf_q[fwd_in_count] <= $signed(long_chirp_imag);
+                    ref_buf_i[fwd_in_count] <= $signed(ref_chirp_real);
+                    ref_buf_q[fwd_in_count] <= $signed(ref_chirp_imag);
                     fwd_in_count <= fwd_in_count + 1;
                 end
 
@@ -775,16 +775,16 @@ always @(posedge clk) begin : ref_bram_port
         if (adc_valid) begin
             we      = 1'b1;
             addr    = 0;
-            wdata_i = $signed(long_chirp_real);
-            wdata_q = $signed(long_chirp_imag);
+            wdata_i = $signed(ref_chirp_real);
+            wdata_q = $signed(ref_chirp_imag);
         end
     end
     ST_COLLECT: begin
         if (adc_valid && collect_count < FFT_SIZE) begin
             we      = 1'b1;
             addr    = collect_count[ADDR_BITS-1:0];
-            wdata_i = $signed(long_chirp_real);
-            wdata_q = $signed(long_chirp_imag);
+            wdata_i = $signed(ref_chirp_real);
+            wdata_q = $signed(ref_chirp_imag);
         end
     end
     ST_REF_FFT: begin

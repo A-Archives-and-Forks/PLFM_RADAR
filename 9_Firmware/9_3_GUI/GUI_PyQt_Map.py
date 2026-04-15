@@ -108,7 +108,7 @@ class GPSData:
 @dataclass 
 class RadarSettings:
     """Radar system configuration"""
-    system_frequency: float = 10e9    # Hz
+    system_frequency: float = 10.5e9  # Hz (PLFM TX LO)
     chirp_duration_1: float = 30e-6   # Long chirp duration (s)
     chirp_duration_2: float = 0.5e-6  # Short chirp duration (s)
     chirps_per_position: int = 32
@@ -116,8 +116,8 @@ class RadarSettings:
     freq_max: float = 30e6            # Hz
     prf1: float = 1000                # PRF 1 (Hz)
     prf2: float = 2000                # PRF 2 (Hz)
-    max_distance: float = 50000       # Max detection range (m)
-    coverage_radius: float = 50000    # Map coverage radius (m)
+    max_distance: float = 1536        # Max detection range (m) -- 64 bins x 24 m
+    coverage_radius: float = 1536     # Map coverage radius (m)
 
 
 class TileServer(Enum):
@@ -198,7 +198,7 @@ class RadarMapWidget(QWidget):
             pitch=0.0
         )
         self._targets: list[RadarTarget] = []
-        self._coverage_radius = 50000  # meters
+        self._coverage_radius = 1536  # meters (64 bins x 24 m, 3 km mode)
         self._tile_server = TileServer.OPENSTREETMAP
         self._show_coverage = True
         self._show_trails = False
@@ -1088,7 +1088,7 @@ class TargetSimulator(QObject):
             new_range = target.range - target.velocity * 0.5  # 0.5 second update
             
             # Check if target is still in range
-            if new_range < 500 or new_range > 50000:
+            if new_range < 50 or new_range > 1536:
                 # Remove this target and add a new one
                 continue
             

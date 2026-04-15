@@ -421,13 +421,13 @@ def test_latency_buffer():
     #
     # For synthesis: the latency_buffer feeds ref data to the chain via
     # chirp_memory_loader_param → latency_buffer → chain.
-    # But wait — looking at radar_receiver_final.v:
+    # Looking at radar_receiver_final.v:
     #   - mem_request drives valid_in on the latency buffer
     #   - The buffer delays {ref_i, ref_q} by LATENCY valid_in cycles
-    #   - The delayed output feeds long_chirp_real/imag → chain
+    #   - The delayed output feeds ref_chirp_real/imag → chain
     #
     # The purpose: the chain in the SYNTHESIS branch reads reference data
-    # via the long_chirp_real/imag ports DURING ST_FWD_FFT (while collecting
+    # via the ref_chirp_real/imag ports DURING ST_FWD_FFT (while collecting
     # input samples). The reference data needs to arrive LATENCY cycles
     # after the first mem_request, where LATENCY accounts for:
     #   - The fft_engine pipeline latency from input to output

@@ -98,9 +98,10 @@ class DemoTarget:
 
     __slots__ = ("azimuth", "classification", "id", "range_m", "snr", "velocity")
 
-    # Physical range grid: 64 bins x ~4.8 m/bin = ~307 m max
-    _RANGE_PER_BIN: float = (3e8 / (2 * 500e6)) * 16  # ~4.8 m
-    _MAX_RANGE: float = _RANGE_PER_BIN * NUM_RANGE_BINS  # ~307 m
+    # Physical range grid: matched-filter receiver, 100 MSPS post-DDC, 16:1 decimation
+    # range_per_bin = c / (2 * 100e6) * 16 = 24.0 m
+    _RANGE_PER_BIN: float = (3e8 / (2 * 100e6)) * 16  # 24.0 m
+    _MAX_RANGE: float = _RANGE_PER_BIN * NUM_RANGE_BINS  # 1536 m
 
     def __init__(self, tid: int):
         self.id = tid
@@ -187,10 +188,10 @@ class DemoSimulator:
         mag = np.zeros((NUM_RANGE_BINS, NUM_DOPPLER_BINS), dtype=np.float64)
         det = np.zeros((NUM_RANGE_BINS, NUM_DOPPLER_BINS), dtype=np.uint8)
 
-        # Range/Doppler scaling (approximate)
-        range_per_bin = (3e8 / (2 * 500e6)) * 16  # ~4.8 m/bin
+        # Range/Doppler scaling -- matched-filter receiver, 100 MSPS, 16:1 decimation
+        range_per_bin = (3e8 / (2 * 100e6)) * 16  # 24.0 m/bin
         max_range = range_per_bin * NUM_RANGE_BINS
-        vel_per_bin = 1.484  # m/s per Doppler bin (from WaveformConfig)
+        vel_per_bin = 2.67  # m/s per Doppler bin (lam/(2*32*167us))
 
         for t in targets:
             if t.range_m > max_range or t.range_m < 0:
@@ -385,7 +386,9 @@ class RadarDashboard:
     UPDATE_INTERVAL_MS = 100  # 10 Hz display refresh
 
     # Radar parameters used for range-axis scaling.
-    BANDWIDTH = 500e6        # Hz — chirp bandwidth
+    # Matched-filter receiver: range_per_bin = c / (2 * fs_processing) * decimation
+    # = 3e8 / (2 * 100e6) * 16 = 24.0 m/bin
+    BANDWIDTH = 20e6         # Hz — chirp bandwidth (for display/info only)
     C = 3e8                  # m/s — speed of light
 
     def __init__(self, root: tk.Tk, connection: FT2232HConnection,
@@ -514,10 +517,9 @@ class RadarDashboard:
         self._build_log_tab(tab_log)
 
     def _build_display_tab(self, parent):
-        # Compute physical axis limits
-        range_res = self.C / (2.0 * self.BANDWIDTH)  # ~0.3 m per FFT bin
-        # After decimation 1024→64, each range bin = 16 FFT bins
-        range_per_bin = range_res * 16
+        # Compute physical axis limits -- matched-filter receiver
+        # Range per bin: c / (2 * fs_processing) * decimation_factor = 24.0 m
+        range_per_bin = self.C / (2.0 * 100e6) * 16  # 24.0 m
         max_range = range_per_bin * NUM_RANGE_BINS
 
         doppler_bin_lo = 0

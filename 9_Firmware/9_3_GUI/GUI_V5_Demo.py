@@ -77,7 +77,7 @@ class RadarTarget:
 
 @dataclass
 class RadarSettings:
-    system_frequency: float = 10e9
+    system_frequency: float = 10.5e9
     chirp_duration_1: float = 30e-6  # Long chirp duration
     chirp_duration_2: float = 0.5e-6  # Short chirp duration
     chirps_per_position: int = 32
@@ -85,8 +85,8 @@ class RadarSettings:
     freq_max: float = 30e6
     prf1: float = 1000
     prf2: float = 2000
-    max_distance: float = 50000
-    map_size: float = 50000  # Map size in meters
+    max_distance: float = 1536
+    map_size: float = 1536  # Map size in meters (64 bins x 24 m)
 
 
 @dataclass
@@ -1254,8 +1254,8 @@ class RadarGUI:
             ("Frequency Max (Hz):", "freq_max", 30e6),
             ("PRF1 (Hz):", "prf1", 1000),
             ("PRF2 (Hz):", "prf2", 2000),
-            ("Max Distance (m):", "max_distance", 50000),
-            ("Map Size (m):", "map_size", 50000),
+            ("Max Distance (m):", "max_distance", 1536),
+            ("Map Size (m):", "map_size", 1536),
         ]
 
         self.settings_vars = {}

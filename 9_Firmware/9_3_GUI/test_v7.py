@@ -65,9 +65,9 @@ class TestRadarSettings(unittest.TestCase):
 
     def test_defaults(self):
         s = _models().RadarSettings()
-        self.assertEqual(s.system_frequency, 10e9)
-        self.assertEqual(s.coverage_radius, 50000)
-        self.assertEqual(s.max_distance, 50000)
+        self.assertEqual(s.system_frequency, 10.5e9)
+        self.assertEqual(s.coverage_radius, 1536)
+        self.assertEqual(s.max_distance, 1536)
 
 
 class TestGPSData(unittest.TestCase):
@@ -425,26 +425,27 @@ class TestWaveformConfig(unittest.TestCase):
     def test_defaults(self):
         from v7.models import WaveformConfig
         wc = WaveformConfig()
-        self.assertEqual(wc.sample_rate_hz, 4e6)
-        self.assertEqual(wc.bandwidth_hz, 500e6)
-        self.assertEqual(wc.chirp_duration_s, 300e-6)
-        self.assertEqual(wc.center_freq_hz, 10.525e9)
+        self.assertEqual(wc.sample_rate_hz, 100e6)
+        self.assertEqual(wc.bandwidth_hz, 20e6)
+        self.assertEqual(wc.chirp_duration_s, 30e-6)
+        self.assertEqual(wc.pri_s, 167e-6)
+        self.assertEqual(wc.center_freq_hz, 10.5e9)
         self.assertEqual(wc.n_range_bins, 64)
         self.assertEqual(wc.n_doppler_bins, 32)
         self.assertEqual(wc.fft_size, 1024)
         self.assertEqual(wc.decimation_factor, 16)
 
     def test_range_resolution(self):
-        """range_resolution_m should be ~5.62 m/bin with ADI defaults."""
+        """range_resolution_m should be ~24.0 m/bin with PLFM defaults."""
         from v7.models import WaveformConfig
         wc = WaveformConfig()
-        self.assertAlmostEqual(wc.range_resolution_m, 5.621, places=1)
+        self.assertAlmostEqual(wc.range_resolution_m, 23.98, places=1)
 
     def test_velocity_resolution(self):
-        """velocity_resolution_mps should be ~1.484 m/s/bin."""
+        """velocity_resolution_mps should be ~2.67 m/s/bin."""
         from v7.models import WaveformConfig
         wc = WaveformConfig()
-        self.assertAlmostEqual(wc.velocity_resolution_mps, 1.484, places=2)
+        self.assertAlmostEqual(wc.velocity_resolution_mps, 2.67, places=1)
 
     def test_max_range(self):
         """max_range_m = range_resolution * n_range_bins."""
@@ -466,7 +467,8 @@ class TestWaveformConfig(unittest.TestCase):
         """Non-default parameters correctly change derived values."""
         from v7.models import WaveformConfig
         wc1 = WaveformConfig()
-        wc2 = WaveformConfig(bandwidth_hz=1e9)  # double BW → halve range res
+        # Matched-filter: range_per_bin = c/(2*fs)*dec — proportional to 1/fs
+        wc2 = WaveformConfig(sample_rate_hz=200e6)  # double fs → halve range res
         self.assertAlmostEqual(wc2.range_resolution_m, wc1.range_resolution_m / 2, places=2)
 
     def test_zero_center_freq_velocity(self):
@@ -925,18 +927,18 @@ class TestExtractTargetsFromFrame(unittest.TestCase):
         """Detection at range bin 10 → range = 10 * range_resolution."""
         from v7.processing import extract_targets_from_frame
         frame = self._make_frame(det_cells=[(10, 16)])  # dbin=16 = center → vel=0
-        targets = extract_targets_from_frame(frame, range_resolution=5.621)
+        targets = extract_targets_from_frame(frame, range_resolution=23.98)
         self.assertEqual(len(targets), 1)
-        self.assertAlmostEqual(targets[0].range, 10 * 5.621, places=2)
+        self.assertAlmostEqual(targets[0].range, 10 * 23.98, places=1)
         self.assertAlmostEqual(targets[0].velocity, 0.0, places=2)
 
     def test_velocity_sign(self):
         """Doppler bin < center → negative velocity, > center → positive."""
         from v7.processing import extract_targets_from_frame
         frame = self._make_frame(det_cells=[(5, 10), (5, 20)])
-        targets = extract_targets_from_frame(frame, velocity_resolution=1.484)
-        # dbin=10: vel = (10-16)*1.484 = -8.904  (approaching)
-        # dbin=20: vel = (20-16)*1.484 = +5.936  (receding)
+        targets = extract_targets_from_frame(frame, velocity_resolution=2.67)
+        # dbin=10: vel = (10-16)*2.67 = -16.02  (approaching)
+        # dbin=20: vel = (20-16)*2.67 = +10.68  (receding)
         self.assertLess(targets[0].velocity, 0)
         self.assertGreater(targets[1].velocity, 0)
 

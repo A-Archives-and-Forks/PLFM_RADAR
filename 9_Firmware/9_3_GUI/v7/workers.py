@@ -368,7 +368,7 @@ class TargetSimulator(QObject):
 
         for t in self._targets:
             new_range = t.range - t.velocity * 0.5
-            if new_range < 500 or new_range > 50000:
+            if new_range < 50 or new_range > 1536:
                 continue  # target exits coverage — drop it
 
             new_vel = max(-150, min(150, t.velocity + random.uniform(-2, 2)))

@@ -724,8 +724,8 @@ class TestTier3CStub:
             "freq_max": 30.0e6,
             "prf1": 1000.0,
             "prf2": 2000.0,
-            "max_distance": 50000.0,
-            "map_size": 50000.0,
+            "max_distance": 1536.0,
+            "map_size": 1536.0,
         }
         pkt = self._build_settings_packet(values)
         result = self._run_stub(stub_binary, pkt)
@@ -784,11 +784,11 @@ class TestTier3CStub:
     def test_bad_markers_rejected(self, stub_binary):
         """Packet with wrong start/end markers must be rejected."""
         values = {
-            "system_frequency": 10.0e9, "chirp_duration_1": 30.0e-6,
+            "system_frequency": 10.5e9, "chirp_duration_1": 30.0e-6,
             "chirp_duration_2": 0.5e-6, "chirps_per_position": 32,
             "freq_min": 10.0e6, "freq_max": 30.0e6,
             "prf1": 1000.0, "prf2": 2000.0,
-            "max_distance": 50000.0, "map_size": 50000.0,
+            "max_distance": 1536.0, "map_size": 1536.0,
         }
         pkt = self._build_settings_packet(values)
 

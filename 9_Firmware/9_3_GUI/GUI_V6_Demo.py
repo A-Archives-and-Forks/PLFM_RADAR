@@ -45,7 +45,7 @@ class RadarSettings:
     range_bins: int = 1024
     doppler_bins: int = 32
     prf: float = 1000
-    max_range: float = 5000
+    max_range: float = 1536
     max_velocity: float = 100
     cfar_threshold: float = 13.0
 
@@ -577,7 +577,7 @@ class RadarDemoGUI:
             ('Range Bins:', 'range_bins', 1024, 256, 2048),
             ('Doppler Bins:', 'doppler_bins', 32, 8, 128),
             ('PRF (Hz):', 'prf', 1000, 100, 10000),
-            ('Max Range (m):', 'max_range', 5000, 100, 50000),
+            ('Max Range (m):', 'max_range', 1536, 100, 25000),
             ('Max Velocity (m/s):', 'max_vel', 100, 10, 500),
             ('CFAR Threshold (dB):', 'cfar', 13.0, 5.0, 30.0)
         ]

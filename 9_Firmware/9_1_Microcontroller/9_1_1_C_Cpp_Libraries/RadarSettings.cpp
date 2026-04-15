@@ -6,16 +6,16 @@ RadarSettings::RadarSettings() {
 }
 
 void RadarSettings::resetToDefaults() {
-    system_frequency = 10.0e9;    // 10 GHz
-    chirp_duration_1 = 30.0e-6;   // 30 �s
-    chirp_duration_2 = 0.5e-6;    // 0.5 �s
+    system_frequency = 10.5e9;    // 10.5 GHz (PLFM TX LO, ADF4382 config)
+    chirp_duration_1 = 30.0e-6;   // 30 µs
+    chirp_duration_2 = 0.5e-6;    // 0.5 µs
     chirps_per_position = 32;
     freq_min = 10.0e6;           // 10 MHz
     freq_max = 30.0e6;           // 30 MHz
     prf1 = 1000.0;               // 1 kHz
     prf2 = 2000.0;               // 2 kHz
-    max_distance = 50000.0;      // 50 km
-    map_size = 50000.0;          // 50 km
+    max_distance = 1536.0;       // 1536 m (64 bins × 24 m, 3 km mode)
+    map_size = 1536.0;           // 1536 m
     
     settings_valid = true;
 }
@@ -88,7 +88,7 @@ bool RadarSettings::validateSettings() {
     if (prf1 < 100 || prf1 > 10000) return false;
     if (prf2 < 100 || prf2 > 10000) return false;
     if (max_distance < 100 || max_distance > 100000) return false;
-    if (map_size < 1000 || map_size > 200000) return false;
+    if (map_size < 100 || map_size > 200000) return false;
     
     return true;
 }

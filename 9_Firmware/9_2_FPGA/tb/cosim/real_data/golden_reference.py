@@ -2,8 +2,8 @@
 """
 golden_reference.py — AERIS-10 FPGA bit-accurate golden reference model
 
-Uses ADI CN0566 Phaser radar data (10.525 GHz X-band FMCW) to validate
-the FPGA signal processing pipeline stage by stage:
+Uses ADI CN0566 Phaser radar data (10.525 GHz, used as test stimulus only) to
+validate the FPGA signal processing pipeline stage by stage:
 
     ADC → DDC (NCO+mixer+CIC+FIR) → Range FFT → Doppler FFT → Detection
 
@@ -90,7 +90,8 @@ HAMMING_Q15 = [
     0x3088, 0x1B6D, 0x0E5C, 0x0A3D,
 ]
 
-# ADI dataset parameters
+# ADI dataset parameters — used ONLY for loading/requantizing ADI Phaser test data.
+# These are NOT PLFM hardware parameters. See AERIS-10 constants below.
 ADI_SAMPLE_RATE = 4e6            # 4 MSPS
 ADI_IF_FREQ = 100e3             # 100 kHz IF
 ADI_RF_FREQ = 9.9e9             # 9.9 GHz
@@ -99,9 +100,17 @@ ADI_RAMP_TIME = 300e-6          # 300 us
 ADI_NUM_CHIRPS = 256
 ADI_SAMPLES_PER_CHIRP = 1079
 
-# AERIS-10 parameters
-AERIS_FS = 400e6                 # 400 MHz ADC clock
-AERIS_IF = 120e6                 # 120 MHz IF
+# AERIS-10 hardware parameters (from ADF4382/AD9523/main.cpp configuration)
+AERIS_FS = 400e6                 # 400 MHz ADC clock (AD9523 OUT4)
+AERIS_IF = 120e6                 # 120 MHz IF (TX 10.5 GHz - RX 10.38 GHz)
+AERIS_FS_PROCESSING = 100e6     # Post-DDC rate (400 MSPS / 4x CIC)
+AERIS_CARRIER_HZ = 10.5e9       # TX LO (ADF4382, verified)
+AERIS_RX_LO_HZ = 10.38e9        # RX LO (ADF4382)
+AERIS_CHIRP_BW = 20e6           # Chirp bandwidth (target: 30 MHz Phase 1)
+AERIS_LONG_CHIRP_S = 30e-6      # Long chirp duration
+AERIS_PRI_S = 167e-6            # Pulse repetition interval
+AERIS_DECIMATION = 16           # Range bin decimation (1024 → 64)
+AERIS_RANGE_PER_BIN = 24.0      # Meters per decimated bin
 
 
 # ===========================================================================
