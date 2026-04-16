@@ -5,8 +5,8 @@ gen_multiseg_golden.py
 Generate golden reference data for matched_filter_multi_segment co-simulation.
 
 Tests the overlap-save segmented convolution wrapper:
-  - Long chirp: 3072 samples (4 segments x 1024, with 128-sample overlap)
-  - Short chirp: 50 samples zero-padded to 1024 (1 segment)
+  - Long chirp: 3072 samples (2 segments x 2048, with overlap)
+  - Short chirp: 50 samples zero-padded to 2048 (1 segment)
 
 The matched_filter_processing_chain is already verified bit-perfect.
 This test validates that the multi_segment wrapper:
@@ -17,7 +17,7 @@ This test validates that the multi_segment wrapper:
 
 Strategy:
   - Generate known input data (identifiable per-segment patterns)
-  - Generate per-segment reference chirp data (1024 samples each)
+  - Generate per-segment reference chirp data (2048 samples each)
   - Run each segment through MatchedFilterChain independently in Python
   - Compare RTL multi-segment outputs against per-segment Python outputs
 
@@ -64,7 +64,7 @@ def generate_long_chirp_test():
       - buffer_write_ptr starts at 0 (from ST_IDLE reset)
       - Collects 896 samples into positions [0:895]
       - Positions [896:1023] remain zero (from initial block)
-      - Processes full 1024-sample buffer
+      - Processes full 2048-sample buffer
 
     For segment 1 (ST_NEXT_SEGMENT):
       - Copies input_buffer[SEGMENT_ADVANCE+i] to input_buffer[i] for i=0..127
@@ -89,7 +89,7 @@ def generate_long_chirp_test():
                           positions 0-895: input data
                           positions 896-1023: zeros from initial block
 
-    Processing chain sees: 1024 samples = [data[0:895], zeros[896:1023]]
+    Processing chain sees: 2048 samples = [data[0:1919], zeros[1920:2047]]
 
     OVERLAP-SAVE (ST_NEXT_SEGMENT):
       - Copies buffer[SEGMENT_ADVANCE+i] -> buffer[i] for i=0..OVERLAP-1
@@ -105,12 +105,12 @@ def generate_long_chirp_test():
         It was 896 after segment 0, then continues: 896+768 = 1664
 
     Actually I realize the overlap-save implementation in this RTL has an issue:
-    For segment 0, the buffer is only partially filled (896 out of 1024),
+    For segment 0, the buffer is only partially filled (1920 out of 2048),
     with zeros in positions 896-1023. The "overlap" that gets carried to
     segment 1 is those zeros, not actual signal data.
 
     A proper overlap-save would:
-    1. Fill the entire 1024-sample buffer for each segment
+    1. Fill the entire 2048-sample buffer for each segment
     2. The overlap region is the LAST 128 samples of the previous segment
 
     But this RTL only fills 896 samples per segment and relies on the
@@ -140,7 +140,7 @@ def generate_long_chirp_test():
     [768 new data samples at positions [128:895]] +
     [128 stale/zero samples at positions [896:1023]]
 
-    This is NOT standard overlap-save. It's a 1024-pt buffer but only
+    This is NOT standard overlap-save. It's a 2048-pt buffer but only
     896 positions are "active" for triggering, and positions 896-1023
     are never filled after init.
 
@@ -153,22 +153,16 @@ def generate_long_chirp_test():
     """
 
     # Parameters matching RTL
-    BUFFER_SIZE = 1024
+    BUFFER_SIZE = 2048
     OVERLAP_SAMPLES = 128
-    SEGMENT_ADVANCE = BUFFER_SIZE - OVERLAP_SAMPLES  # 896
-    LONG_SEGMENTS = 4
+    SEGMENT_ADVANCE = BUFFER_SIZE - OVERLAP_SAMPLES  # 1920
+    LONG_SEGMENTS = 2
 
-    # Total input samples needed:
-    # Segment 0: 896 samples (ptr goes from 0 to 896)
-    # Segment 1: 768 samples (ptr goes from 128 to 896)
-    # Segment 2: 768 samples (ptr goes from 128 to 896)
-    # Segment 3: 768 samples (ptr goes from 128 to 896)
-    # Total: 896 + 3*768 = 896 + 2304 = 3200
-    # But chirp_complete triggers at chirp_samples_collected >= LONG_CHIRP_SAMPLES-1 = 2999
-    # So the last segment may be truncated.
-    # Let's generate 3072 input samples (to be safe, more than 3000).
+    # Total input samples needed: seg0 needs 1920, seg1 needs 1792 (3712 total).
+    # chirp_complete triggers at chirp_samples_collected >= LONG_CHIRP_SAMPLES-1 (2999),
+    # so the last segment may be truncated. We generate 3800 samples to be safe.
 
-    TOTAL_SAMPLES = 3200  # More than enough for 4 segments
+    TOTAL_SAMPLES = 3800  # More than enough for 2 segments
 
     # Generate input signal: identifiable pattern per segment
     # Use a tone at different frequencies for each expected segment region
@@ -184,7 +178,7 @@ def generate_long_chirp_test():
         input_q.append(saturate(val_q, 16))
 
     # Generate per-segment reference chirps (just use known patterns)
-    # Each segment gets a different reference (1024 samples each)
+    # Each segment gets a different reference (2048 samples each)
     ref_segs_i = []
     ref_segs_q = []
     for seg in range(LONG_SEGMENTS):
@@ -202,7 +196,7 @@ def generate_long_chirp_test():
         ref_segs_q.append(ref_q)
 
     # Now simulate the RTL's overlap-save algorithm in Python
-    mf_chain = MatchedFilterChain(fft_size=1024)
+    mf_chain = MatchedFilterChain(fft_size=2048)
 
     # Simulate the buffer exactly as RTL does it
     input_buffer_i = [0] * BUFFER_SIZE
@@ -310,7 +304,7 @@ def generate_long_chirp_test():
         f.write('segment,bin,golden_i,golden_q\n')
         for seg in range(LONG_SEGMENTS):
             out_re, out_im = segment_results[seg]
-            for b in range(1024):
+            for b in range(2048):
                 f.write(f'{seg},{b},{out_re[b]},{out_im[b]}\n')
 
 
@@ -321,9 +315,9 @@ def generate_short_chirp_test():
     """
     Generate test data for single-segment short chirp.
 
-    Short chirp: 50 samples of data, zero-padded to 1024.
+    Short chirp: 50 samples of data, zero-padded to 2048.
     """
-    BUFFER_SIZE = 1024
+    BUFFER_SIZE = 2048
     SHORT_SAMPLES = 50
 
     # Generate 50-sample input
@@ -336,7 +330,7 @@ def generate_short_chirp_test():
         input_i.append(saturate(val_i, 16))
         input_q.append(saturate(val_q, 16))
 
-    # Zero-pad to 1024 (as RTL does in ST_ZERO_PAD)
+    # Zero-pad to 2048 (as RTL does in ST_ZERO_PAD)
     # Note: padding computed here for documentation; actual buffer uses buf_i/buf_q below
     _padded_i = list(input_i) + [0] * (BUFFER_SIZE - SHORT_SAMPLES)
     _padded_q = list(input_q) + [0] * (BUFFER_SIZE - SHORT_SAMPLES)
@@ -359,7 +353,7 @@ def generate_short_chirp_test():
             buf_i.append(0)
             buf_q.append(0)
 
-    # Reference chirp (1024 samples)
+    # Reference chirp (2048 samples)
     ref_i = []
     ref_q = []
     for n in range(BUFFER_SIZE):
@@ -370,7 +364,7 @@ def generate_short_chirp_test():
         ref_q.append(saturate(val_q, 16))
 
     # Process through MF chain
-    mf_chain = MatchedFilterChain(fft_size=1024)
+    mf_chain = MatchedFilterChain(fft_size=2048)
     out_re, out_im = mf_chain.process(buf_i, buf_q, ref_i, ref_q)
 
     # Write hex files
@@ -394,7 +388,7 @@ def generate_short_chirp_test():
     csv_path = os.path.join(out_dir, 'multiseg_short_golden.csv')
     with open(csv_path, 'w') as f:
         f.write('bin,golden_i,golden_q\n')
-        for b in range(1024):
+        for b in range(2048):
             f.write(f'{b},{out_re[b]},{out_im[b]}\n')
 
     return out_re, out_im
@@ -409,7 +403,7 @@ if __name__ == '__main__':
         # Find peak
         max_mag = 0
         peak_bin = 0
-        for b in range(1024):
+        for b in range(2048):
             mag = abs(out_re[b]) + abs(out_im[b])
             if mag > max_mag:
                 max_mag = mag
@@ -418,7 +412,7 @@ if __name__ == '__main__':
     short_re, short_im = generate_short_chirp_test()
     max_mag = 0
     peak_bin = 0
-    for b in range(1024):
+    for b in range(2048):
         mag = abs(short_re[b]) + abs(short_im[b])
         if mag > max_mag:
             max_mag = mag

@@ -7,7 +7,7 @@ via FT2232H USB 2.0 interface.
 
 Features:
   - FT2232H USB reader with packet parsing (matches usb_data_interface_ft2232h.v)
-  - Real-time range-Doppler magnitude heatmap (64x32)
+   - Real-time range-Doppler magnitude heatmap (512x32)
   - CFAR detection overlay (flagged cells highlighted)
   - Range profile waterfall plot (range vs. time)
   - Host command sender (opcodes per radar_system_top.v:
@@ -99,9 +99,9 @@ class DemoTarget:
     __slots__ = ("azimuth", "classification", "id", "range_m", "snr", "velocity")
 
     # Physical range grid: matched-filter receiver, 100 MSPS post-DDC, 16:1 decimation
-    # range_per_bin = c / (2 * 100e6) * 16 = 24.0 m
-    _RANGE_PER_BIN: float = (3e8 / (2 * 100e6)) * 16  # 24.0 m
-    _MAX_RANGE: float = _RANGE_PER_BIN * NUM_RANGE_BINS  # 1536 m
+    # range_per_bin = c / (2 * 100e6) * 4 = 6.0 m
+    _RANGE_PER_BIN: float = (3e8 / (2 * 100e6)) * 4  # 6.0 m
+    _MAX_RANGE: float = _RANGE_PER_BIN * NUM_RANGE_BINS  # 3072 m
 
     def __init__(self, tid: int):
         self.id = tid
@@ -189,7 +189,7 @@ class DemoSimulator:
         det = np.zeros((NUM_RANGE_BINS, NUM_DOPPLER_BINS), dtype=np.uint8)
 
         # Range/Doppler scaling -- matched-filter receiver, 100 MSPS, 16:1 decimation
-        range_per_bin = (3e8 / (2 * 100e6)) * 16  # 24.0 m/bin
+        range_per_bin = (3e8 / (2 * 100e6)) * 4  # 6.0 m/bin
         max_range = range_per_bin * NUM_RANGE_BINS
         vel_per_bin = 2.67  # m/s per Doppler bin (lam/(2*32*167us))
 
@@ -387,7 +387,7 @@ class RadarDashboard:
 
     # Radar parameters used for range-axis scaling.
     # Matched-filter receiver: range_per_bin = c / (2 * fs_processing) * decimation
-    # = 3e8 / (2 * 100e6) * 16 = 24.0 m/bin
+    # = 3e8 / (2 * 100e6) * 4 = 6.0 m/bin
     BANDWIDTH = 20e6         # Hz — chirp bandwidth (for display/info only)
     C = 3e8                  # m/s — speed of light
 
@@ -519,7 +519,7 @@ class RadarDashboard:
     def _build_display_tab(self, parent):
         # Compute physical axis limits -- matched-filter receiver
         # Range per bin: c / (2 * fs_processing) * decimation_factor = 24.0 m
-        range_per_bin = self.C / (2.0 * 100e6) * 16  # 24.0 m
+        range_per_bin = self.C / (2.0 * 100e6) * 4  # 6.0 m
         max_range = range_per_bin * NUM_RANGE_BINS
 
         doppler_bin_lo = 0
@@ -640,14 +640,14 @@ class RadarDashboard:
         sc_row = ttk.Frame(grp_op)
         sc_row.pack(fill="x", pady=2)
         ttk.Label(sc_row, text="Stream Control").pack(side="left")
-        var_sc = tk.StringVar(value="7")
+        var_sc = tk.StringVar(value="15")
         self._param_vars["4"] = var_sc
         ttk.Entry(sc_row, textvariable=var_sc, width=6).pack(side="left", padx=6)
-        ttk.Label(sc_row, text="0-7", foreground=ACCENT,
+        ttk.Label(sc_row, text="0-63", foreground=ACCENT,
                   font=("Menlo", 9)).pack(side="left")
         ttk.Button(sc_row, text="Set",
                    command=lambda: self._send_validated(
-                       0x04, var_sc, bits=3)).pack(side="right")
+                       0x04, var_sc, bits=6)).pack(side="right")
 
         ttk.Button(grp_op, text="Request Status",
                    command=lambda: self._send_cmd(0xFF, 0)).pack(fill="x", pady=2)

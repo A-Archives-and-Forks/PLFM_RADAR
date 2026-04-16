@@ -7,9 +7,11 @@ No GUI dependencies — safe to import from tests and headless scripts.
 
 USB Interface: FT2232H USB 2.0 (8-bit, 50T production board) via pyftdi
 
-USB Packet Protocol (11-byte):
+USB Packet Protocol:
   TX (FPGA→Host):
-    Data packet:  [0xAA] [range_q 2B] [range_i 2B] [dop_re 2B] [dop_im 2B] [det 1B] [0x55]
+    Bulk frame (FT2232H):
+      [0xAA] [flags 1B] [frame# 2B] [range_bins 2B] [doppler_bins 2B]
+      [range profile (opt)] [doppler mag/IQ (opt)] [detect flags (opt)] [0x55]
     Status packet: [0xBB] [status 6x32b] [0x55]
   RX (Host→FPGA):
     Command: 4 bytes received sequentially {opcode, addr, value_hi, value_lo}
@@ -39,12 +41,15 @@ FOOTER_BYTE = 0x55
 STATUS_HEADER_BYTE = 0xBB
 
 # Packet sizes
-DATA_PACKET_SIZE = 11               # 1 + 4 + 2 + 2 + 1 + 1
+BULK_HEADER_SIZE = 8                 # 1(AA)+1(flags)+2(frame#)+2(Rbins)+2(Dbins)
 STATUS_PACKET_SIZE = 26              # 1 + 24 + 1
 
-NUM_RANGE_BINS = 64
+# Legacy per-sample protocol (FT601 USB 3.0 only)
+DATA_PACKET_SIZE = 11               # 1 + 4 + 2 + 2 + 1 + 1
+
+NUM_RANGE_BINS = 512
 NUM_DOPPLER_BINS = 32
-NUM_CELLS = NUM_RANGE_BINS * NUM_DOPPLER_BINS  # 2048
+NUM_CELLS = NUM_RANGE_BINS * NUM_DOPPLER_BINS  # 16384
 
 WATERFALL_DEPTH = 64
 
@@ -66,7 +71,7 @@ class Opcode(IntEnum):
     RADAR_MODE          = 0x01  # 2-bit mode select
     TRIGGER_PULSE       = 0x02  # self-clearing one-shot trigger
     DETECT_THRESHOLD    = 0x03  # 16-bit detection threshold value
-    STREAM_CONTROL      = 0x04  # 3-bit stream enable mask
+    STREAM_CONTROL      = 0x04  # 6-bit stream/format control
 
     # --- Digital gain (0x16) ---
     GAIN_SHIFT          = 0x16  # 4-bit digital gain shift
@@ -108,7 +113,7 @@ class Opcode(IntEnum):
 
 @dataclass
 class RadarFrame:
-    """One complete radar frame (64 range x 32 Doppler)."""
+    """One complete radar frame (512 range x 32 Doppler)."""
     timestamp: float = 0.0
     range_doppler_i: np.ndarray = field(
         default_factory=lambda: np.zeros((NUM_RANGE_BINS, NUM_DOPPLER_BINS), dtype=np.int16))
@@ -230,9 +235,9 @@ class RadarProtocol:
             return None
 
         sr = StatusResponse()
-        # Word 0: {0xFF[31:24], mode[23:22], stream[21:19], 3'b000[18:16], threshold[15:0]}
+        # Word 0: {0xFF[31:24], mode[23:22], stream[21:16], threshold[15:0]}
         sr.cfar_threshold = words[0] & 0xFFFF
-        sr.stream_ctrl = (words[0] >> 19) & 0x07
+        sr.stream_ctrl = (words[0] >> 16) & 0x3F
         sr.radar_mode = (words[0] >> 22) & 0x03
         # Word 1: {long_chirp[31:16], long_listen[15:0]}
         sr.long_listen = words[1] & 0xFFFF
@@ -258,23 +263,184 @@ class RadarProtocol:
         return sr
 
     @staticmethod
+    def parse_bulk_frame(raw: bytes) -> RadarFrame | None:
+        """Parse a bulk per-frame transfer from the FT2232H USB interface.
+
+        Frame format (from usb_data_interface_ft2232h.v):
+          Byte 0:    0xAA (header)
+          Byte 1:    Format flags {2'b0, sparse_det, mag_only,
+                     stream_cfar, stream_doppler, stream_range}
+          Byte 2-3:  Frame number (16-bit, MSB first)
+          Byte 4-5:  Range bin count (16-bit, MSB first)
+          Byte 6-7:  Doppler bin count (16-bit, MSB first)
+          [variable payload based on flags]
+          Last byte: 0x55 (footer)
+        """
+        if len(raw) < BULK_HEADER_SIZE + 1:  # header + footer minimum
+            return None
+        if raw[0] != HEADER_BYTE:
+            return None
+
+        flags = raw[1]
+        frame_num = struct.unpack_from(">H", raw, 2)[0]
+        n_range = struct.unpack_from(">H", raw, 4)[0]
+        n_doppler = struct.unpack_from(">H", raw, 6)[0]
+
+        stream_range = bool(flags & 0x01)
+        stream_doppler = bool(flags & 0x02)
+        stream_cfar = bool(flags & 0x04)
+        mag_only = bool(flags & 0x08)
+        sparse_det = bool(flags & 0x10)
+
+        offset = BULK_HEADER_SIZE
+        frame = RadarFrame()
+        frame.frame_number = frame_num
+        frame.timestamp = time.time()
+
+        # --- Range profile section ---
+        if stream_range:
+            nbytes = n_range * 2
+            if offset + nbytes > len(raw):
+                return None
+            range_data = np.frombuffer(raw[offset:offset + nbytes],
+                                       dtype=">u2").astype(np.float64)
+            frame.range_profile = range_data
+            offset += nbytes
+
+        # --- Doppler magnitude or I/Q section ---
+        if stream_doppler:
+            if mag_only:
+                nbytes = n_range * n_doppler * 2
+                if offset + nbytes > len(raw):
+                    return None
+                mag_flat = np.frombuffer(raw[offset:offset + nbytes],
+                                         dtype=">u2").astype(np.float64)
+                frame.magnitude = mag_flat.reshape(n_range, n_doppler)
+                # No I/Q available in mag-only mode
+                frame.range_doppler_i = np.zeros((n_range, n_doppler), dtype=np.int16)
+                frame.range_doppler_q = np.zeros((n_range, n_doppler), dtype=np.int16)
+                offset += nbytes
+            else:
+                # Full I/Q: 32-bit per cell (I16, Q16)
+                nbytes = n_range * n_doppler * 4
+                if offset + nbytes > len(raw):
+                    return None
+                iq_data = np.frombuffer(raw[offset:offset + nbytes], dtype=">i2")
+                iq_data = iq_data.reshape(n_range, n_doppler, 2)
+                frame.range_doppler_i = iq_data[:, :, 0].astype(np.int16)
+                frame.range_doppler_q = iq_data[:, :, 1].astype(np.int16)
+                frame.magnitude = (
+                    np.abs(frame.range_doppler_i.astype(np.float64))
+                    + np.abs(frame.range_doppler_q.astype(np.float64))
+                )
+                offset += nbytes
+
+        # --- Detection flags section ---
+        if stream_cfar:
+            if sparse_det:
+                if offset + 2 > len(raw):
+                    return None
+                det_count = struct.unpack_from(">H", raw, offset)[0]
+                offset += 2
+                nbytes = det_count * 6
+                if offset + nbytes > len(raw):
+                    return None
+                det_arr = np.zeros((n_range, n_doppler), dtype=np.uint8)
+                for d in range(det_count):
+                    base = offset + d * 6
+                    rbin = struct.unpack_from(">H", raw, base)[0]
+                    dbin = struct.unpack_from(">H", raw, base + 2)[0]
+                    if rbin < n_range and dbin < n_doppler:
+                        det_arr[rbin, dbin] = 1
+                frame.detections = det_arr
+                frame.detection_count = det_count
+                offset += nbytes
+            else:
+                # Packed bitmap: n_range * n_doppler bits, LSB-first per byte
+                # RTL packs: byte_addr = {range_bin, doppler[4:3]}, bit = doppler[2:0]
+                nbytes = (n_range * n_doppler + 7) // 8
+                if offset + nbytes > len(raw):
+                    return None
+                det_bytes = raw[offset:offset + nbytes]
+                det_arr = np.zeros((n_range, n_doppler), dtype=np.uint8)
+                for r in range(n_range):
+                    for db in range(n_doppler):
+                        byte_idx = r * (n_doppler // 8) + db // 8
+                        bit_pos = db % 8  # LSB-first: doppler[2:0] = bit position
+                        if byte_idx < len(det_bytes) and (det_bytes[byte_idx] >> bit_pos) & 1:
+                            det_arr[r, db] = 1
+                frame.detections = det_arr
+                frame.detection_count = int(det_arr.sum())
+                offset += nbytes
+
+        # Footer check
+        if offset >= len(raw) or raw[offset] != FOOTER_BYTE:
+            return None
+
+        # Derive range_profile from magnitude if not streamed directly
+        if not stream_range and stream_doppler:
+            frame.range_profile = np.sum(frame.magnitude, axis=1)
+
+        return frame
+
+    @staticmethod
+    def compute_bulk_frame_size(flags: int, n_range: int = NUM_RANGE_BINS,
+                                n_doppler: int = NUM_DOPPLER_BINS) -> int:
+        """Compute expected bulk frame size in bytes for given flags."""
+        size = BULK_HEADER_SIZE  # header
+        if flags & 0x01:  # stream_range
+            size += n_range * 2
+        if flags & 0x02:  # stream_doppler
+            if flags & 0x08:  # mag_only
+                size += n_range * n_doppler * 2
+            else:
+                size += n_range * n_doppler * 4
+        if flags & 0x04:  # stream_cfar
+            if flags & 0x10:  # sparse_det — variable, use bitmap estimate
+                size += 2  # count field minimum
+            else:
+                size += (n_range * n_doppler + 7) // 8
+        size += 1  # footer
+        return size
+
+    @staticmethod
     def find_packet_boundaries(buf: bytes) -> list[tuple[int, int, str]]:
         """
-        Scan buffer for packet start markers (0xAA data, 0xBB status).
+        Scan buffer for packet start markers.
+        Supports bulk frames (0xAA with 8-byte header), status (0xBB),
+        and legacy 11-byte data packets (0xAA with footer at offset 10).
         Returns list of (start_idx, expected_end_idx, packet_type).
         """
         packets = []
         i = 0
         while i < len(buf):
             if buf[i] == HEADER_BYTE:
+                # Try bulk frame first (8-byte header with range/doppler counts)
+                if i + BULK_HEADER_SIZE <= len(buf):
+                    flags = buf[i + 1]
+                    n_range = struct.unpack_from(">H", buf, i + 4)[0]
+                    n_doppler = struct.unpack_from(">H", buf, i + 6)[0]
+                    # Sanity: valid bulk frame has reasonable dimensions
+                    if (1 <= n_range <= 2048 and 1 <= n_doppler <= 64
+                            and flags <= 0x3F):
+                        expected_size = RadarProtocol.compute_bulk_frame_size(
+                            flags, n_range, n_doppler)
+                        end = i + expected_size
+                        if end <= len(buf) and buf[end - 1] == FOOTER_BYTE:
+                            packets.append((i, end, "bulk"))
+                            i = end
+                            continue
+                        if end > len(buf):
+                            break  # partial bulk frame
+                # Fallback: legacy 11-byte per-sample packet (FT601)
                 end = i + DATA_PACKET_SIZE
                 if end <= len(buf) and buf[end - 1] == FOOTER_BYTE:
                     packets.append((i, end, "data"))
                     i = end
                 else:
                     if end > len(buf):
-                        break  # partial packet at end — leave for residual
-                    i += 1  # footer mismatch — skip this false header
+                        break
+                    i += 1
             elif buf[i] == STATUS_HEADER_BYTE:
                 end = i + STATUS_PACKET_SIZE
                 if end <= len(buf) and buf[end - 1] == FOOTER_BYTE:
@@ -392,53 +558,62 @@ class FT2232HConnection:
                 log.error(f"FT2232H write error: {e}")
                 return False
 
-    def _mock_read(self, size: int) -> bytes:
+    def _mock_read(self, _size: int) -> bytes:
         """
-        Generate synthetic 11-byte radar data packets for testing.
-        Emits packets in sequential FPGA order (range_bin 0..63, doppler_bin
-        0..31 within each range bin) so that RadarAcquisition._ingest_sample()
-        places them correctly.  A target is injected near range bin 20,
-        Doppler bin 8.
+        Generate a synthetic bulk radar frame for testing.
+        Matches the FT2232H sectioned transfer format: header (8B) →
+        range profile → doppler magnitude → detection flags → footer.
+        A target is injected near range bin 100, Doppler bin 8.
         """
         time.sleep(0.05)
         self._mock_frame_num += 1
 
+        # Stream flags: range + doppler + cfar, mag-only, bitmap detections
+        flags = 0x0F  # stream_range | stream_doppler | stream_cfar | mag_only
+
         buf = bytearray()
-        num_packets = min(NUM_CELLS, size // DATA_PACKET_SIZE)
-        start_idx = getattr(self, '_mock_seq_idx', 0)
+        # --- Header (8 bytes) ---
+        buf.append(HEADER_BYTE)
+        buf.append(flags)
+        buf += struct.pack(">H", self._mock_frame_num & 0xFFFF)
+        buf += struct.pack(">H", NUM_RANGE_BINS)
+        buf += struct.pack(">H", NUM_DOPPLER_BINS)
 
-        for n in range(num_packets):
-            idx = (start_idx + n) % NUM_CELLS
-            rbin = idx // NUM_DOPPLER_BINS
-            dbin = idx % NUM_DOPPLER_BINS
+        # --- Range profile (512 x 16-bit) ---
+        range_profile = self._mock_rng.randint(50, 200, size=NUM_RANGE_BINS).astype(np.uint16)
+        # Inject target peak at range bin ~100
+        for rb in range(98, 103):
+            range_profile[rb] = 8000
+        buf += range_profile.astype(">u2").tobytes()
 
-            range_i = int(self._mock_rng.normal(0, 100))
-            range_q = int(self._mock_rng.normal(0, 100))
-            if abs(rbin - 20) < 3:
-                range_i += 5000
-                range_q += 3000
+        # --- Doppler magnitude (512 x 32 x 16-bit, mag-only) ---
+        mag = self._mock_rng.randint(
+            10, 100, size=(NUM_RANGE_BINS, NUM_DOPPLER_BINS),
+        ).astype(np.uint16)
+        for rb in range(98, 103):
+            for db in range(7, 10):
+                mag[rb, db] = 8000
+        buf += mag.astype(">u2").tobytes()
 
-            dop_i = int(self._mock_rng.normal(0, 50))
-            dop_q = int(self._mock_rng.normal(0, 50))
-            if abs(rbin - 20) < 3 and abs(dbin - 8) < 2:
-                dop_i += 8000
-                dop_q += 4000
+        # --- Detection flags (bitmap: 512*32/8 = 2048 bytes) ---
+        det = np.zeros((NUM_RANGE_BINS, NUM_DOPPLER_BINS), dtype=np.uint8)
+        for rb in range(99, 102):
+            for db in range(7, 10):
+                det[rb, db] = 1
+        det_bytes = bytearray((NUM_RANGE_BINS * NUM_DOPPLER_BINS + 7) // 8)
+        for r in range(NUM_RANGE_BINS):
+            for d in range(NUM_DOPPLER_BINS):
+                if det[r, d]:
+                    # LSB-first per byte, matching RTL: byte_addr = {range_bin, doppler[4:3]},
+                    # bit = doppler[2:0]. This matches the parser at line ~368.
+                    byte_idx = r * (NUM_DOPPLER_BINS // 8) + d // 8
+                    bit_pos = d % 8
+                    det_bytes[byte_idx] |= 1 << bit_pos
+        buf += det_bytes
 
-            detection = 1 if (abs(rbin - 20) < 2 and abs(dbin - 8) < 2) else 0
+        # --- Footer ---
+        buf.append(FOOTER_BYTE)
 
-            # Build compact 11-byte packet
-            pkt = bytearray()
-            pkt.append(HEADER_BYTE)
-            pkt += struct.pack(">h", np.clip(range_q, -32768, 32767))
-            pkt += struct.pack(">h", np.clip(range_i, -32768, 32767))
-            pkt += struct.pack(">h", np.clip(dop_i, -32768, 32767))
-            pkt += struct.pack(">h", np.clip(dop_q, -32768, 32767))
-            pkt.append(detection & 0x01)
-            pkt.append(FOOTER_BYTE)
-
-            buf += pkt
-
-        self._mock_seq_idx = (start_idx + num_packets) % NUM_CELLS
         return bytes(buf)
 
 
@@ -523,8 +698,8 @@ class DataRecorder:
 
 class RadarAcquisition(threading.Thread):
     """
-    Background thread: reads from USB (FT2232H), parses 11-byte packets,
-    assembles frames, and pushes complete frames to the display queue.
+    Background thread: reads from USB (FT2232H), parses bulk frames
+    or legacy 11-byte packets, and pushes complete frames to the display queue.
     """
 
     def __init__(self, connection, frame_queue: queue.Queue,
@@ -547,7 +722,7 @@ class RadarAcquisition(threading.Thread):
         log.info("Acquisition thread started")
         residual = b""
         while not self._stop_event.is_set():
-            chunk = self.conn.read(4096)
+            chunk = self.conn.read(65536)
             if chunk is None or len(chunk) == 0:
                 time.sleep(0.01)
                 continue
@@ -561,11 +736,16 @@ class RadarAcquisition(threading.Thread):
                 residual = raw[last_end:]
             else:
                 # No packets found — keep entire buffer as residual
-                # but cap at 2x max packet size to avoid unbounded growth
-                max_residual = 2 * max(DATA_PACKET_SIZE, STATUS_PACKET_SIZE)
+                # but cap to avoid unbounded growth
+                max_residual = 65536
                 residual = raw[-max_residual:] if len(raw) > max_residual else raw
             for start, end, ptype in packets:
-                if ptype == "data":
+                if ptype == "bulk":
+                    frame = RadarProtocol.parse_bulk_frame(raw[start:end])
+                    if frame is not None:
+                        self._emit_frame(frame)
+                elif ptype == "data":
+                    # Legacy per-sample protocol (FT601)
                     parsed = RadarProtocol.parse_data_packet(
                         raw[start:end])
                     if parsed is not None:
@@ -587,8 +767,21 @@ class RadarAcquisition(threading.Thread):
 
         log.info("Acquisition thread stopped")
 
+    def _emit_frame(self, frame: RadarFrame):
+        """Push a complete bulk frame to the display queue."""
+        # Push to display queue (drop old if backed up)
+        try:
+            self.frame_queue.put_nowait(frame)
+        except queue.Full:
+            with contextlib.suppress(queue.Empty):
+                self.frame_queue.get_nowait()
+            self.frame_queue.put_nowait(frame)
+
+        if self.recorder and self.recorder.recording:
+            self.recorder.record_frame(frame)
+
     def _ingest_sample(self, sample: dict):
-        """Place sample into current frame and emit when complete."""
+        """Place sample into current frame and emit when complete (legacy FT601 path)."""
         rbin = self._sample_idx // NUM_DOPPLER_BINS
         dbin = self._sample_idx % NUM_DOPPLER_BINS
 
@@ -607,22 +800,13 @@ class RadarAcquisition(threading.Thread):
             self._finalize_frame()
 
     def _finalize_frame(self):
-        """Complete frame: compute range profile, push to queue, record."""
+        """Complete frame: compute range profile, push to queue, record (legacy path)."""
         self._frame.timestamp = time.time()
         self._frame.frame_number = self._frame_num
         # Range profile = sum of magnitude across Doppler bins
         self._frame.range_profile = np.sum(self._frame.magnitude, axis=1)
 
-        # Push to display queue (drop old if backed up)
-        try:
-            self.frame_queue.put_nowait(self._frame)
-        except queue.Full:
-            with contextlib.suppress(queue.Empty):
-                self.frame_queue.get_nowait()
-            self.frame_queue.put_nowait(self._frame)
-
-        if self.recorder and self.recorder.recording:
-            self.recorder.record_frame(self._frame)
+        self._emit_frame(self._frame)
 
         self._frame_num += 1
         self._frame = RadarFrame()

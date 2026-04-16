@@ -56,7 +56,7 @@ class RadarProcessor:
     """Full radar processing pipeline: fusion, clustering, association, tracking."""
 
     def __init__(self):
-        self.range_doppler_map = np.zeros((1024, 32))
+        self.range_doppler_map = np.zeros((512, 32))
         self.detected_targets: list[RadarTarget] = []
         self.track_id_counter: int = 0
         self.tracks: dict[int, dict] = {}

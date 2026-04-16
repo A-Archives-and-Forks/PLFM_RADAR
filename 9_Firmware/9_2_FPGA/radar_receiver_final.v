@@ -1,5 +1,7 @@
 `timescale 1ns / 1ps
 
+`include "radar_params.vh"
+
 module radar_receiver_final (
     input wire clk,           // 100MHz    
 	 input wire reset_n,
@@ -17,17 +19,22 @@ module radar_receiver_final (
     output wire [31:0] doppler_output,
     output wire doppler_valid,
     output wire [4:0] doppler_bin,
-    output wire [5:0] range_bin,
+    output wire [`RP_RANGE_BIN_BITS-1:0] range_bin,  // 9-bit
     
-    // Matched filter range profile output (for USB)
+    // Raw matched-filter output (debug/bring-up)
     output wire signed [15:0] range_profile_i_out,
     output wire signed [15:0] range_profile_q_out,
     output wire range_profile_valid_out,
+
+    // Decimated 512-bin range profile (for USB bulk frames / downstream consumers)
+    output wire [15:0] decimated_range_mag_out,
+    output wire decimated_range_valid_out,
     
     // Host command inputs (Gap 4: USB Read Path, CDC-synchronized)
     // CDC-synchronized in radar_system_top.v before reaching here
     input wire [1:0] host_mode,      // Radar mode: 00=STM32, 01=auto-scan, 10=single-chirp
     input wire host_trigger,          // Single-chirp trigger pulse (1 clk cycle)
+    input wire [1:0] host_range_mode, // Range mode: 00=3km (short only), 01=long-range (dual chirp)
 
     // Gap 2: Host-configurable chirp timing (CDC-synchronized in radar_system_top.v)
     input wire [15:0] host_long_chirp_cycles,
@@ -116,20 +123,36 @@ wire [31:0] doppler_spectrum;
 wire doppler_spectrum_valid;
 wire [4:0] doppler_bin_out;
 wire doppler_processing;
-wire doppler_frame_done;
+
+// frame_complete from doppler_processor is a LEVEL signal (high whenever
+// state == S_IDLE && !frame_buffer_full). Downstream consumers (USB FT2232H,
+// AGC, CFAR) expect a single-cycle PULSE. Convert here at the source so all
+// consumers are safe.
+wire doppler_frame_done_level;  // raw level from doppler_processor
+reg  doppler_frame_done_prev;
+wire doppler_frame_done;        // rising-edge pulse (1 clk cycle)
+
+always @(posedge clk or negedge reset_n) begin
+    if (!reset_n)
+        doppler_frame_done_prev <= 1'b0;
+    else
+        doppler_frame_done_prev <= doppler_frame_done_level;
+end
+
+assign doppler_frame_done = doppler_frame_done_level & ~doppler_frame_done_prev;
 assign doppler_frame_done_out = doppler_frame_done;
 
 // ========== RANGE BIN DECIMATOR SIGNALS ==========
 wire signed [15:0] decimated_range_i;
 wire signed [15:0] decimated_range_q;
 wire decimated_range_valid;
-wire [5:0] decimated_range_bin;
+wire [`RP_RANGE_BIN_BITS-1:0] decimated_range_bin;  // 9-bit
 
 // ========== MTI CANCELLER SIGNALS ==========
 wire signed [15:0] mti_range_i;
 wire signed [15:0] mti_range_q;
 wire mti_range_valid;
-wire [5:0] mti_range_bin;
+wire [`RP_RANGE_BIN_BITS-1:0] mti_range_bin;  // 9-bit
 wire mti_first_chirp;
 
 // ========== RADAR MODE CONTROLLER SIGNALS ==========
@@ -147,6 +170,7 @@ radar_mode_controller rmc (
     .clk(clk),
     .reset_n(reset_n),
     .mode(host_mode),                     // Controlled by host via USB (default: 2'b01 auto-scan)
+    .range_mode(host_range_mode),          // Range mode: 00=3km, 01=long-range (drives chirp type)
     .stm32_new_chirp(stm32_new_chirp_rx),
     .stm32_new_elevation(stm32_new_elevation_rx),
     .stm32_new_azimuth(stm32_new_azimuth_rx),
@@ -265,7 +289,7 @@ rx_gain_control gain_ctrl (
 );
 
 // 3. Dual Chirp Memory Loader
-wire [9:0] sample_addr_from_chain;
+wire [10:0] sample_addr_from_chain;
 
 chirp_memory_loader_param chirp_mem (
     .clk(clk),
@@ -278,18 +302,6 @@ chirp_memory_loader_param chirp_mem (
     .ref_q(ref_q),
     .mem_ready(mem_ready)
 );
-
-// Sample address generator
-reg [9:0] sample_addr_reg;
-always @(posedge clk or negedge reset_n) begin
-    if (!reset_n) begin
-        sample_addr_reg <= 0;
-    end else if (mem_request) begin
-        sample_addr_reg <= sample_addr_reg + 1;
-        if (sample_addr_reg == 1023) sample_addr_reg <= 0;
-    end
-end
-// sample_addr_wire removed — was unused implicit wire (synthesis warning)
 
 // 4. CRITICAL: Reference Chirp Latency Buffer
 // This aligns reference data with FFT output (3187 cycle delay)
@@ -324,6 +336,12 @@ wire range_valid;
 assign range_profile_i_out = range_profile_i;
 assign range_profile_q_out = range_profile_q;
 assign range_profile_valid_out = range_valid;
+// Manhattan magnitude: |I| + |Q|, saturated to 16 bits
+wire [15:0] abs_mti_i = mti_range_i[15] ? (~mti_range_i + 16'd1) : mti_range_i;
+wire [15:0] abs_mti_q = mti_range_q[15] ? (~mti_range_q + 16'd1) : mti_range_q;
+wire [16:0] manhattan_sum = {1'b0, abs_mti_i} + {1'b0, abs_mti_q};
+assign decimated_range_mag_out = manhattan_sum[16] ? 16'hFFFF : manhattan_sum[15:0];
+assign decimated_range_valid_out = mti_range_valid;
 
 matched_filter_multi_segment mf_dual (
     .clk(clk),
@@ -348,11 +366,11 @@ matched_filter_multi_segment mf_dual (
 );
 
 // ========== CRITICAL: RANGE BIN DECIMATOR ==========
-// Convert 1024 range bins to 64 bins for Doppler
+// Convert 2048 range bins to 512 bins for Doppler
 range_bin_decimator #(
-    .INPUT_BINS(1024),
-    .OUTPUT_BINS(64),
-    .DECIMATION_FACTOR(16)
+    .INPUT_BINS(`RP_FFT_SIZE),              // 2048
+    .OUTPUT_BINS(`RP_NUM_RANGE_BINS),       // 512
+    .DECIMATION_FACTOR(`RP_DECIMATION_FACTOR)  // 4
 ) range_decim (
     .clk(clk),
     .reset_n(reset_n),
@@ -364,7 +382,7 @@ range_bin_decimator #(
     .range_valid_out(decimated_range_valid),
     .range_bin_index(decimated_range_bin),
     .decimation_mode(2'b01),           // Peak detection mode
-    .start_bin(10'd0),
+    .start_bin(11'd0),
     .watchdog_timeout()                // Diagnostic — unconnected (monitored via ILA if needed)
 );
 
@@ -373,8 +391,8 @@ range_bin_decimator #(
 // H(z) = 1 - z^{-1} → null at DC Doppler, removes stationary clutter.
 // When host_mti_enable=0: transparent pass-through.
 mti_canceller #(
-    .NUM_RANGE_BINS(64),
-    .DATA_WIDTH(16)
+    .NUM_RANGE_BINS(`RP_NUM_RANGE_BINS),    // 512
+    .DATA_WIDTH(`RP_DATA_WIDTH)             // 16
 ) mti_inst (
     .clk(clk),
     .reset_n(reset_n),
@@ -428,10 +446,10 @@ assign range_data_valid = mti_range_valid;
 
 // ========== DOPPLER PROCESSOR ==========
 doppler_processor_optimized #(
-    .DOPPLER_FFT_SIZE(16),
-    .RANGE_BINS(64),
-    .CHIRPS_PER_FRAME(32),
-    .CHIRPS_PER_SUBFRAME(16)
+    .DOPPLER_FFT_SIZE(`RP_DOPPLER_FFT_SIZE),        // 16
+    .RANGE_BINS(`RP_NUM_RANGE_BINS),                // 512
+    .CHIRPS_PER_FRAME(`RP_CHIRPS_PER_FRAME),        // 32
+    .CHIRPS_PER_SUBFRAME(`RP_CHIRPS_PER_SUBFRAME)   // 16
 ) doppler_proc (
     .clk(clk),
     .reset_n(reset_n),
@@ -447,7 +465,7 @@ doppler_processor_optimized #(
     
     // Status
     .processing_active(doppler_processing),
-    .frame_complete(doppler_frame_done),
+    .frame_complete(doppler_frame_done_level),
     .status()
 );
 

@@ -2,12 +2,15 @@
 """
 validate_mem_files.py — Validate all .mem files against AERIS-10 radar parameters.
 
+Updated for 2048-pt FFT / decimation=4 / 512 output bins / 2-segment chirp.
+
 Checks:
-  1. Structural: line counts, hex format, value ranges for all 12 .mem files
+  1. Structural: line counts, hex format, value ranges for all .mem files
   2. FFT twiddle files: bit-exact match against cos(2*pi*k/N) in Q15
   3. Long chirp .mem files: reverse-engineer parameters, check for chirp structure
   4. Short chirp .mem files: check length, value range, spectral content
-   5. latency_buffer LATENCY=3187 parameter validation
+  5. latency_buffer LATENCY=3187 parameter validation
+  6. Memory addressing: 2 segments x 2048 = 4096 slots
 
 Usage:
     python3 validate_mem_files.py
@@ -18,7 +21,7 @@ import os
 import sys
 
 # ============================================================================
-# AERIS-10 System Parameters (from radar_scene.py)
+# AERIS-10 System Parameters (from radar_params.vh / radar_scene.py)
 # ============================================================================
 F_CARRIER = 10.5e9        # 10.5 GHz carrier
 C_LIGHT = 3.0e8
@@ -29,14 +32,14 @@ FS_SYS = 100e6            # System clock (100 MHz, after CIC 4x)
 T_LONG_CHIRP = 30e-6      # 30 us long chirp
 T_SHORT_CHIRP = 0.5e-6    # 0.5 us short chirp
 CIC_DECIMATION = 4
-FFT_SIZE = 1024
+FFT_SIZE = 2048
 DOPPLER_FFT_SIZE = 16
 LONG_CHIRP_SAMPLES = int(T_LONG_CHIRP * FS_SYS)  # 3000 at 100 MHz
 
-# Overlap-save parameters
+# Overlap-save parameters (2048-pt FFT)
 OVERLAP_SAMPLES = 128
-SEGMENT_ADVANCE = FFT_SIZE - OVERLAP_SAMPLES  # 896
-LONG_SEGMENTS = 4
+SEGMENT_ADVANCE = FFT_SIZE - OVERLAP_SAMPLES  # 1920
+LONG_SEGMENTS = 2
 
 MEM_DIR = os.path.join(os.path.dirname(__file__), '..', '..')
 
@@ -79,21 +82,24 @@ def test_structural():
 
     expected = {
         # FFT twiddle files (quarter-wave cosine ROMs)
-        'fft_twiddle_1024.mem': {'lines': 256, 'desc': '1024-pt FFT quarter-wave cos ROM'},
+        'fft_twiddle_2048.mem': {'lines': 512, 'desc': '2048-pt FFT quarter-wave cos ROM'},
         'fft_twiddle_16.mem':   {'lines': 4,   'desc': '16-pt FFT quarter-wave cos ROM'},
-        # Long chirp segments (4 segments x 1024 samples each)
-        'long_chirp_seg0_i.mem': {'lines': 1024, 'desc': 'Long chirp seg 0 I'},
-        'long_chirp_seg0_q.mem': {'lines': 1024, 'desc': 'Long chirp seg 0 Q'},
-        'long_chirp_seg1_i.mem': {'lines': 1024, 'desc': 'Long chirp seg 1 I'},
-        'long_chirp_seg1_q.mem': {'lines': 1024, 'desc': 'Long chirp seg 1 Q'},
-        'long_chirp_seg2_i.mem': {'lines': 1024, 'desc': 'Long chirp seg 2 I'},
-        'long_chirp_seg2_q.mem': {'lines': 1024, 'desc': 'Long chirp seg 2 Q'},
-        'long_chirp_seg3_i.mem': {'lines': 1024, 'desc': 'Long chirp seg 3 I'},
-        'long_chirp_seg3_q.mem': {'lines': 1024, 'desc': 'Long chirp seg 3 Q'},
+        # Long chirp segments (2 segments x 2048 samples each)
+        'long_chirp_seg0_i.mem': {'lines': 2048, 'desc': 'Long chirp seg 0 I'},
+        'long_chirp_seg0_q.mem': {'lines': 2048, 'desc': 'Long chirp seg 0 Q'},
+        'long_chirp_seg1_i.mem': {'lines': 2048, 'desc': 'Long chirp seg 1 I'},
+        'long_chirp_seg1_q.mem': {'lines': 2048, 'desc': 'Long chirp seg 1 Q'},
         # Short chirp (50 samples)
         'short_chirp_i.mem': {'lines': 50, 'desc': 'Short chirp I'},
         'short_chirp_q.mem': {'lines': 50, 'desc': 'Short chirp Q'},
     }
+
+    # Verify deleted segments do NOT exist
+    for deleted in ['long_chirp_seg2_i.mem', 'long_chirp_seg2_q.mem',
+                    'long_chirp_seg3_i.mem', 'long_chirp_seg3_q.mem']:
+        path = os.path.join(MEM_DIR, deleted)
+        check(not os.path.isfile(path),
+              f"{deleted} does NOT exist (deleted — only 2 segments now)")
 
     for fname, info in expected.items():
         path = os.path.join(MEM_DIR, fname)
@@ -114,13 +120,13 @@ def test_structural():
 # ============================================================================
 # TEST 2: FFT Twiddle Factor Validation
 # ============================================================================
-def test_twiddle_1024():
-    vals = read_mem_hex('fft_twiddle_1024.mem')
+def test_twiddle_2048():
+    vals = read_mem_hex('fft_twiddle_2048.mem')
 
     max_err = 0
     err_details = []
-    for k in range(min(256, len(vals))):
-        angle = 2.0 * math.pi * k / 1024.0
+    for k in range(min(512, len(vals))):
+        angle = 2.0 * math.pi * k / 2048.0
         expected = round(math.cos(angle) * 32767.0)
         expected = max(-32768, min(32767, expected))
         actual = vals[k]
@@ -131,7 +137,7 @@ def test_twiddle_1024():
             err_details.append((k, actual, expected, err))
 
     check(max_err <= 1,
-          f"fft_twiddle_1024.mem: max twiddle error = {max_err} LSB (tolerance: 1)")
+          f"fft_twiddle_2048.mem: max twiddle error = {max_err} LSB (tolerance: 1)")
     if err_details:
         for _, _act, _exp, _e in err_details[:5]:
             pass
@@ -153,50 +159,38 @@ def test_twiddle_16():
     check(max_err <= 1,
           f"fft_twiddle_16.mem: max twiddle error = {max_err} LSB (tolerance: 1)")
 
-    # Print all 4 entries for reference
-    for k in range(min(4, len(vals))):
-        angle = 2.0 * math.pi * k / 16.0
-        expected = round(math.cos(angle) * 32767.0)
-
 
 # ============================================================================
-# TEST 3: Long Chirp .mem File Analysis
+# TEST 3: Long Chirp .mem File Analysis (2 segments x 2048)
 # ============================================================================
 def test_long_chirp():
 
-    # Load all 4 segments
+    # Load all 2 segments
     all_i = []
     all_q = []
-    for seg in range(4):
+    for seg in range(LONG_SEGMENTS):
         seg_i = read_mem_hex(f'long_chirp_seg{seg}_i.mem')
         seg_q = read_mem_hex(f'long_chirp_seg{seg}_q.mem')
         all_i.extend(seg_i)
         all_q.extend(seg_q)
 
     total_samples = len(all_i)
-    check(total_samples == 4096,
-          f"Total long chirp samples: {total_samples} (expected 4096 = 4 segs x 1024)")
+    expected_total = LONG_SEGMENTS * FFT_SIZE  # 2 * 2048 = 4096
+    check(total_samples == expected_total,
+          f"Total long chirp samples: {total_samples} "
+          f"(expected {expected_total} = {LONG_SEGMENTS} segs x {FFT_SIZE})")
 
     # Compute magnitude envelope
     magnitudes = [math.sqrt(i*i + q*q) for i, q in zip(all_i, all_q, strict=False)]
     max_mag = max(magnitudes)
-    min(magnitudes)
-    sum(magnitudes) / len(magnitudes)
-
 
     # Check if this looks like it came from generate_reference_chirp_q15
     # That function uses 32767 * 0.9 scaling => max magnitude ~29490
     expected_max_from_model = 32767 * 0.9
     uses_model_scaling = max_mag > expected_max_from_model * 0.8
-    if uses_model_scaling:
-        pass
-    else:
+    if not uses_model_scaling:
         warn(f"Magnitude ({max_mag:.0f}) is much lower than expected from Python model "
              f"({expected_max_from_model:.0f}). .mem files may have unknown provenance.")
-
-    # Check non-zero content: how many samples are non-zero?
-    sum(1 for v in all_i if v != 0)
-    sum(1 for v in all_q if v != 0)
 
     # Analyze instantaneous frequency via phase differences
     phases = []
@@ -221,12 +215,9 @@ def test_long_chirp():
             freq_estimates.append(f_inst)
 
     if freq_estimates:
-        sum(freq_estimates[:50]) / 50 if len(freq_estimates) > 50 else freq_estimates[0]
-        sum(freq_estimates[-50:]) / 50 if len(freq_estimates) > 50 else freq_estimates[-1]
         f_min = min(freq_estimates)
         f_max = max(freq_estimates)
         f_range = f_max - f_min
-
 
         # A chirp should show frequency sweep
         is_chirp = f_range > 0.5e6  # At least 0.5 MHz sweep
@@ -235,37 +226,18 @@ def test_long_chirp():
 
         # Check if bandwidth roughly matches expected
         bw_match = abs(f_range - CHIRP_BW) / CHIRP_BW < 0.5  # within 50%
-        if bw_match:
-            pass
-        else:
-            warn(f"Bandwidth {f_range/1e6:.2f} MHz does NOT match expected {CHIRP_BW/1e6:.2f} MHz")
+        if not bw_match:
+            warn(f"Bandwidth {f_range/1e6:.2f} MHz does NOT match expected "
+                 f"{CHIRP_BW/1e6:.2f} MHz")
 
-    # Compare segment boundaries for overlap-save consistency
-    # In proper overlap-save, the chirp data should be segmented at 896-sample boundaries
-    # with segments being 1024-sample FFT blocks
-    for seg in range(4):
+    # Verify each segment has 2048 entries
+    for seg in range(LONG_SEGMENTS):
         seg_i = read_mem_hex(f'long_chirp_seg{seg}_i.mem')
         seg_q = read_mem_hex(f'long_chirp_seg{seg}_q.mem')
-        seg_mags = [math.sqrt(i*i + q*q) for i, q in zip(seg_i, seg_q, strict=False)]
-        sum(seg_mags) / len(seg_mags)
-        max(seg_mags)
-
-        # Check segment 3 zero-padding (chirp is 3000 samples, seg3 starts at 3072)
-        # Samples 3000-4095 should be zero (or near-zero) if chirp is exactly 3000 samples
-        if seg == 3:
-            # Seg3 covers chirp samples 3072..4095
-            # If chirp is only 3000 samples, then only samples 0..(3000-3072) = NONE are valid
-            # Actually chirp has 3000 samples total. Seg3 starts at index 3*1024=3072.
-            # So seg3 should only have 3000-3072 = -72 -> no valid chirp data!
-            # Wait, but the .mem files have 1024 lines with non-trivial data...
-            # Let's check if seg3 has significant data
-            zero_count = sum(1 for m in seg_mags if m < 2)
-            if zero_count > 500:
-                pass
-            else:
-                pass
-        else:
-            pass
+        check(len(seg_i) == FFT_SIZE,
+              f"long_chirp_seg{seg}_i.mem: {len(seg_i)} samples (expected {FFT_SIZE})")
+        check(len(seg_q) == FFT_SIZE,
+              f"long_chirp_seg{seg}_q.mem: {len(seg_q)} samples (expected {FFT_SIZE})")
 
 
 # ============================================================================
@@ -285,9 +257,6 @@ def test_short_chirp():
           f"Short chirp length matches T_SHORT_CHIRP * FS_SYS = {expected_samples}")
 
     magnitudes = [math.sqrt(i*i + q*q) for i, q in zip(short_i, short_q, strict=False)]
-    max(magnitudes)
-    sum(magnitudes) / len(magnitudes)
-
 
     # Check non-zero
     nonzero = sum(1 for m in magnitudes if m > 1)
@@ -304,10 +273,6 @@ def test_short_chirp():
             dp += 2 * math.pi
         freq_est.append(dp * FS_SYS / (2 * math.pi))
 
-    if freq_est:
-        freq_est[0]
-        freq_est[-1]
-
 
 # ============================================================================
 # TEST 5: Generate Expected Chirp .mem and Compare
@@ -319,7 +284,8 @@ def test_chirp_vs_model():
 
     model_i = []
     model_q = []
-    n_chirp = min(FFT_SIZE, LONG_CHIRP_SAMPLES)  # 1024
+    # Generate first FFT_SIZE samples of the chirp for seg0 comparison
+    n_chirp = min(FFT_SIZE, LONG_CHIRP_SAMPLES)  # min(2048, 3000) = 2048
 
     for n in range(n_chirp):
         t = n / FS_SYS
@@ -340,15 +306,13 @@ def test_chirp_vs_model():
     model_max = max(model_mags)
     mem_max = max(mem_mags)
 
-
-    # Check if they match (they almost certainly won't based on magnitude analysis)
+    # Check if they match
     matches = sum(1 for a, b in zip(model_i, mem_i, strict=False) if a == b)
 
     if matches > len(model_i) * 0.9:
         pass
     else:
         warn(".mem files do NOT match Python model. They likely have different provenance.")
-        # Try to detect scaling
         if mem_max > 0:
             model_max / mem_max
 
@@ -366,9 +330,7 @@ def test_chirp_vs_model():
             d += 2 * math.pi
         phase_diffs.append(d)
 
-    sum(phase_diffs) / len(phase_diffs)
     max_phase_diff = max(abs(d) for d in phase_diffs)
-
 
     phase_match = max_phase_diff < 0.5  # within 0.5 rad
     check(
@@ -383,142 +345,76 @@ def test_chirp_vs_model():
 # ============================================================================
 def test_latency_buffer():
 
-    # The latency buffer delays the reference chirp data to align with
-    # the matched filter processing chain output.
-    #
-    # The total latency through the processing chain depends on the branch:
-    #
-    # SYNTHESIS branch (fft_engine.v):
-    #   - Load: 1024 cycles (input)
-    #   - Forward FFT: LOG2N=10 stages x N/2=512 butterflies x 5-cycle pipeline = variable
-    #   - Reference FFT: same
-    #   - Conjugate multiply: 1024 cycles (4-stage pipeline in frequency_matched_filter)
-    #   - Inverse FFT: same as forward
-    #   - Output: 1024 cycles
-    #   Total: roughly 3000-4000 cycles depending on pipeline fill
-    #
-    # The LATENCY=3187 value was likely determined empirically to align
-    # the reference chirp arriving at the processing chain with the
-    # correct time-domain position.
-    #
-    # Key constraint: LATENCY must be < 4096 (BRAM buffer size)
     LATENCY = 3187
     BRAM_SIZE = 4096
 
     check(LATENCY < BRAM_SIZE,
           f"LATENCY ({LATENCY}) < BRAM size ({BRAM_SIZE})")
 
-    # The fft_engine processes in stages:
-    # - LOAD: 1024 clocks (accepts input)
-    # - Per butterfly stage: 512 butterflies x 5 pipeline stages = ~2560 clocks + overhead
-    #   Actually: 512 butterflies, each takes 5 cycles = 2560 per stage, 10 stages
-    #   Total compute: 10 * 2560 = 25600 clocks
-    # But this is just for ONE FFT. The chain does 3 FFTs + multiply.
-    #
-    # For the SIMULATION branch, it's 1 clock per operation (behavioral).
-    # LATENCY=3187 doesn't apply to simulation branch behavior —
-    # it's the physical hardware pipeline latency.
-    #
-    # For synthesis: the latency_buffer feeds ref data to the chain via
-    # chirp_memory_loader_param → latency_buffer → chain.
-    # Looking at radar_receiver_final.v:
-    #   - mem_request drives valid_in on the latency buffer
-    #   - The buffer delays {ref_i, ref_q} by LATENCY valid_in cycles
-    #   - The delayed output feeds ref_chirp_real/imag → chain
-    #
-    # The purpose: the chain in the SYNTHESIS branch reads reference data
-    # via the ref_chirp_real/imag ports DURING ST_FWD_FFT (while collecting
-    # input samples). The reference data needs to arrive LATENCY cycles
-    # after the first mem_request, where LATENCY accounts for:
-    #   - The fft_engine pipeline latency from input to output
-    #   - Specifically, the chain processes: load 1024 → FFT → FFT → multiply → IFFT → output
-    #     The reference is consumed during the second FFT (ST_REF_BITREV/BUTTERFLY)
-    #     which starts after the first FFT completes.
-
     # For now, validate that LATENCY is reasonable (between 1000 and 4095)
     check(1000 < LATENCY < 4095,
           f"LATENCY={LATENCY} in reasonable range [1000, 4095]")
-
-    # Check that the module name vs parameter is consistent
-    # Module name was renamed from latency_buffer_2159 to latency_buffer
-    # to match the actual parameterized LATENCY value. No warning needed.
 
     # Validate address arithmetic won't overflow
     min_read_ptr = 4096 + 0 - LATENCY
     check(min_read_ptr >= 0 and min_read_ptr < 4096,
           f"Min read_ptr after wrap = {min_read_ptr} (valid: 0..4095)")
 
-    # The latency buffer uses valid_in gated reads, so it only counts
-    # valid samples. The number of valid_in pulses between first write
-    # and first read is LATENCY.
-
 
 # ============================================================================
 # TEST 7: Cross-check chirp memory loader addressing
+#   2 segments: {segment_select[0], sample_addr[10:0]} = 12-bit address
 # ============================================================================
 def test_memory_addressing():
 
-    # chirp_memory_loader_param uses: long_addr = {segment_select[1:0], sample_addr[9:0]}
-    # This creates a 12-bit address: seg[1:0] ++ addr[9:0]
-    # Segment 0: addresses 0x000..0x3FF (0..1023)
-    # Segment 1: addresses 0x400..0x7FF (1024..2047)
-    # Segment 2: addresses 0x800..0xBFF (2048..3071)
-    # Segment 3: addresses 0xC00..0xFFF (3072..4095)
+    # chirp_memory_loader_param uses: long_addr = {segment_select[0], sample_addr[10:0]}
+    # This creates a 12-bit address:
+    # Segment 0: addresses 0x000..0x7FF (0..2047)
+    # Segment 1: addresses 0x800..0xFFF (2048..4095)
 
-    for seg in range(4):
-        base = seg * 1024
-        end = base + 1023
-        addr_from_concat = (seg << 10) | 0  # {seg[1:0], 10'b0}
-        addr_end = (seg << 10) | 1023
+    for seg in range(LONG_SEGMENTS):
+        base = seg * FFT_SIZE
+        end = base + FFT_SIZE - 1
+        addr_from_concat = (seg << 11) | 0  # {seg[0], 11'b0}
+        addr_end = (seg << 11) | (FFT_SIZE - 1)
 
         check(
             addr_from_concat == base,
-            f"Seg {seg} base address: {{{seg}[1:0], 10'b0}} = {addr_from_concat} "
+            f"Seg {seg} base address: {{{seg}[0], 11'b0}} = {addr_from_concat} "
             f"(expected {base})",
         )
         check(addr_end == end,
-              f"Seg {seg} end address: {{{seg}[1:0], 10'h3FF}} = {addr_end} (expected {end})")
+              f"Seg {seg} end address: {{{seg}[0], 11'h7FF}} = {addr_end} "
+              f"(expected {end})")
 
     # Memory is declared as: reg [15:0] long_chirp_i [0:4095]
-    # $readmemh loads seg0 to [0:1023], seg1 to [1024:2047], etc.
+    # $readmemh loads seg0 to [0:2047], seg1 to [2048:4095].
     # Addressing via {segment_select, sample_addr} maps correctly.
 
+    # Verify total memory = LONG_SEGMENTS * FFT_SIZE = 4096
+    total_mem = LONG_SEGMENTS * FFT_SIZE
+    check(total_mem == 4096,
+          f"Total chirp memory slots: {total_mem} (expected 4096)")
+
 
 # ============================================================================
-# TEST 8: Seg3 zero-padding analysis
+# TEST 8: Seg1 zero-padding analysis
+#   With 2048-pt FFT and 2 segments:
+#   Seg0: chirp samples 0..2047
+#   Seg1: chirp samples 2048..4095 (chirp is 3000, so samples 3000..4095 = zero-padded)
 # ============================================================================
-def test_seg3_padding():
+def test_seg1_padding():
 
-    # The long chirp has 3000 samples (30 us at 100 MHz).
-    # With 4 segments of 1024 samples = 4096 total memory slots.
-    # Segments are loaded contiguously into memory:
-    #   Seg0: chirp samples 0..1023
-    #   Seg1: chirp samples 1024..2047
-    #   Seg2: chirp samples 2048..3071
-    #   Seg3: chirp samples 3072..4095
-    #
-    # But the chirp only has 3000 samples! So seg3 should have:
-    #   Valid chirp data at indices 0..(3000-3072-1) = NEGATIVE
-    #   Wait — 3072 > 3000, so seg3 has NO valid chirp samples if chirp is exactly 3000.
-    #
-    # However, the overlap-save algorithm in matched_filter_multi_segment.v
-    # collects data differently:
-    #   Seg0: collect 896 DDC samples, buffer[0:895], zero-pad [896:1023]
-    #   Seg1: overlap from seg0[768:895] → buffer[0:127], collect 896 → buffer[128:1023]
-    #   ...
-    # The chirp reference is indexed by segment_select + sample_addr,
-    # so it reads ALL 1024 values for each segment regardless.
-    #
-    # If the chirp is 3000 samples but only 4*1024=4096 slots exist,
-    # the question is: do the .mem files contain 3000 samples of real chirp
-    # data spread across 4096 slots, or something else?
+    seg1_i = read_mem_hex('long_chirp_seg1_i.mem')
+    seg1_q = read_mem_hex('long_chirp_seg1_q.mem')
 
-    seg3_i = read_mem_hex('long_chirp_seg3_i.mem')
-    seg3_q = read_mem_hex('long_chirp_seg3_q.mem')
+    mags = [math.sqrt(i*i + q*q) for i, q in zip(seg1_i, seg1_q, strict=False)]
 
-    mags = [math.sqrt(i*i + q*q) for i, q in zip(seg3_i, seg3_q, strict=False)]
-
-    # Count trailing zeros (samples after chirp ends)
+    # The chirp is 3000 samples. Seg1 starts at index 2048.
+    # Valid chirp data: indices 0..(3000-2048-1) = 0..951
+    # Zero-padded: indices 952..2047
+    chirp_samples_in_seg1 = LONG_CHIRP_SAMPLES - FFT_SIZE  # 3000 - 2048 = 952
+    # Count trailing zeros
     trailing_zeros = 0
     for m in reversed(mags):
         if m < 2:
@@ -526,20 +422,16 @@ def test_seg3_padding():
         else:
             break
 
+    expected_zeros = FFT_SIZE - chirp_samples_in_seg1  # 2048 - 952 = 1096
+    # Allow some tolerance (within 50 samples)
+    check(abs(trailing_zeros - expected_zeros) < 50,
+          f"Seg1 trailing zeros: {trailing_zeros} "
+          f"(expected ~{expected_zeros} for {LONG_CHIRP_SAMPLES}-sample chirp)")
+
     nonzero = sum(1 for m in mags if m > 2)
-
-
-    if nonzero == 1024:
-        # This means the .mem files encode 4096 chirp samples, not 3000
-        # The chirp duration used for .mem generation was different from T_LONG_CHIRP
-        actual_chirp_samples = 4 * 1024  # = 4096
-        actual_duration = actual_chirp_samples / FS_SYS
-        warn(f"Chirp in .mem files appears to be {actual_chirp_samples} samples "
-             f"({actual_duration*1e6:.1f} us), not {LONG_CHIRP_SAMPLES} samples "
-             f"({T_LONG_CHIRP*1e6:.1f} us)")
-    elif trailing_zeros > 100:
-        # Some padding at end
-        3072 + (1024 - trailing_zeros)
+    check(nonzero > 0,
+          f"Seg1 has {nonzero} non-zero samples "
+          f"(expected ~{chirp_samples_in_seg1} valid chirp samples)")
 
 
 # ============================================================================
@@ -548,14 +440,14 @@ def test_seg3_padding():
 def main():
 
     test_structural()
-    test_twiddle_1024()
+    test_twiddle_2048()
     test_twiddle_16()
     test_long_chirp()
     test_short_chirp()
     test_chirp_vs_model()
     test_latency_buffer()
     test_memory_addressing()
-    test_seg3_padding()
+    test_seg1_padding()
 
     if fail_count == 0:
         pass

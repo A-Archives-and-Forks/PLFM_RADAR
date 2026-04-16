@@ -1,15 +1,15 @@
 ========================================================================
 Matched Filter Golden Reference Summary
 Operation: output = IFFT( FFT(signal) * conj(FFT(reference)) )
-FFT length: 1024
+FFT length: 2048
 ========================================================================
 
 ------------------------------------------------------------------------
 Case 1: DC autocorrelation: signal=ref=DC(I=0x1000,Q=0). Expected: large peak at bin 0, zero elsewhere. Peak will saturate to 32767 due to 16-bit clamp.
 ------------------------------------------------------------------------
   Peak bin:              0
-  Peak magnitude (float):17179869184.000000
-  Peak I (float):        17179869184.000000
+  Peak magnitude (float):34359738368.000000
+  Peak I (float):        34359738368.000000
   Peak Q (float):        0.000000
   Peak I (quantized):    32767
   Peak Q (quantized):    0
@@ -25,8 +25,8 @@ Case 1: DC autocorrelation: signal=ref=DC(I=0x1000,Q=0). Expected: large peak at
 Case 2: Tone autocorrelation: signal=ref=tone(bin 5, amp 8000). Expected: peak at bin 0 (autocorrelation peak at zero lag).
 ------------------------------------------------------------------------
   Peak bin:              0
-  Peak magnitude (float):65536183223.999985
-  Peak I (float):        65536183223.999985
+  Peak magnitude (float):131072740064.000046
+  Peak I (float):        131072740064.000046
   Peak Q (float):        -0.000000
   Peak I (quantized):    32767
   Peak Q (quantized):    0
@@ -41,10 +41,10 @@ Case 2: Tone autocorrelation: signal=ref=tone(bin 5, amp 8000). Expected: peak a
 ------------------------------------------------------------------------
 Case 3: Shifted tone: signal=tone(bin 5), ref=tone(bin 5) delayed by 3 samples. Cross-correlation peak should shift to indicate the delay.
 ------------------------------------------------------------------------
-  Peak bin:              253
-  Peak magnitude (float):65536183223.999992
-  Peak I (float):        0.000005
-  Peak Q (float):        65536183223.999992
+  Peak bin:              509
+  Peak magnitude (float):131072740063.999985
+  Peak I (float):        -0.000016
+  Peak Q (float):        131072740063.999985
   Peak I (quantized):    0
   Peak Q (quantized):    32767
   Files:

@@ -72,7 +72,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Frame dimensions from FPGA
-NUM_RANGE_BINS = 64
+NUM_RANGE_BINS = 512
 NUM_DOPPLER_BINS = 32
 
 # Force C locale (period as decimal separator) for all QDoubleSpinBox instances.
@@ -92,7 +92,7 @@ def _make_dspin() -> QDoubleSpinBox:
 # =============================================================================
 
 class RangeDopplerCanvas(FigureCanvasQTAgg):
-    """Matplotlib canvas showing the 64x32 Range-Doppler map with dark theme."""
+    """Matplotlib canvas showing the 512x32 Range-Doppler map with dark theme."""
 
     def __init__(self, _parent=None):
         fig = Figure(figsize=(10, 6), facecolor=DARK_BG)
@@ -104,7 +104,7 @@ class RangeDopplerCanvas(FigureCanvasQTAgg):
             extent=[0, NUM_DOPPLER_BINS, 0, NUM_RANGE_BINS], origin="lower",
         )
 
-        self.ax.set_title("Range-Doppler Map (64x32)", color=DARK_FG)
+        self.ax.set_title("Range-Doppler Map (512x32)", color=DARK_FG)
         self.ax.set_xlabel("Doppler Bin", color=DARK_FG)
         self.ax.set_ylabel("Range Bin", color=DARK_FG)
         self.ax.tick_params(colors=DARK_FG)
@@ -643,9 +643,9 @@ class RadarDashboard(QMainWindow):
         btn_trigger.clicked.connect(lambda: self._send_fpga_cmd(0x02, 1))
         op_layout.addWidget(btn_trigger)
 
-        # Stream Control (3-bit mask)
-        self._add_fpga_param_row(op_layout, "Stream Control", 0x04, 7, 3,
-                                 "0-7, 3-bit mask, rst=7")
+        # Stream Control (6-bit)
+        self._add_fpga_param_row(op_layout, "Stream Control", 0x04, 63, 6,
+                                 "0-63, 6-bit stream/format, rst=15")
 
         btn_status = QPushButton("Request Status")
         btn_status.clicked.connect(lambda: self._send_fpga_cmd(0xFF, 0))
@@ -1639,7 +1639,7 @@ class RadarDashboard(QMainWindow):
 
     @pyqtSlot(object)
     def _on_frame_ready(self, frame: RadarFrame):
-        """Handle a complete 64x32 radar frame from production acquisition."""
+        """Handle a complete 512x32 radar frame from production acquisition."""
         self._current_frame = frame
         self._frame_count += 1
 

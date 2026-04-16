@@ -381,6 +381,13 @@ run_doppler_cosim() {
 #   run_test <name> <vvp_path> <iverilog_args...>
 # ---------------------------------------------------------------------------
 run_test() {
+    # Optional: --timeout=N as first arg overrides default 120s
+    local timeout_secs=120
+    if [[ "$1" == --timeout=* ]]; then
+        timeout_secs="${1#--timeout=}"
+        shift
+    fi
+
     local name="$1"
     local vvp="$2"
     shift 2
@@ -398,7 +405,7 @@ run_test() {
 
     # Run
     local output
-    output=$(timeout 120 vvp "$vvp" 2>&1) || true
+    output=$(timeout "$timeout_secs" vvp "$vvp" 2>&1) || true
 
     # Count PASS/FAIL in output (testbenches use explicit [PASS]/[FAIL] markers)
     local test_pass test_fail
@@ -547,6 +554,23 @@ if [[ "$QUICK" -eq 0 ]]; then
     #   - tb_fullchain_realdata.v (committed Python golden hex, exact match)
     # A proper full-pipeline co-sim (DDC→MF→Decim→Doppler vs Python) is
     # planned as a replacement (Phase C of CI test plan).
+
+    # Receiver integration (structural + bounds + pulse assertions)
+    # Tests the full RX pipeline: ADC stub → DDC → MF → Decim → Doppler
+    # Verifies doppler_frame_done is a single-cycle pulse (catches
+    # level-vs-pulse wiring bugs at module boundaries).
+    run_test --timeout=600 "Receiver Integration (tb_radar_receiver_final)" \
+        tb/tb_rx_final_reg.vvp \
+        tb/tb_radar_receiver_final.v \
+        radar_receiver_final.v tb/ad9484_interface_400m_stub.v \
+        ddc_400m.v nco_400m_enhanced.v cic_decimator_4x_enhanced.v \
+        cdc_modules.v fir_lowpass.v ddc_input_interface.v \
+        rx_gain_control.v \
+        chirp_memory_loader_param.v latency_buffer.v \
+        matched_filter_multi_segment.v matched_filter_processing_chain.v \
+        range_bin_decimator.v mti_canceller.v \
+        doppler_processor.v xfft_16.v fft_engine.v \
+        radar_mode_controller.v
 
     # Full system top (monitoring-only, legacy)
     run_test "System Top (radar_system_tb)" \

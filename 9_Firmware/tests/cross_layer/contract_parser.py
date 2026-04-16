@@ -152,54 +152,6 @@ def parse_python_packet_constants(filepath: Path | None = None) -> dict[str, Pac
     }
 
 
-def parse_python_data_packet_fields(filepath: Path | None = None) -> list[DataPacketField]:
-    """
-    Extract byte offsets from parse_data_packet() by finding struct.unpack_from calls.
-    Returns fields in byte order.
-    """
-    if filepath is None:
-        filepath = GUI_DIR / "radar_protocol.py"
-    text = filepath.read_text()
-
-    # Find parse_data_packet method body
-    match = re.search(
-        r'def parse_data_packet\(.*?\).*?(?=\n    @|\n    def |\nclass |\Z)',
-        text, re.DOTALL
-    )
-    if not match:
-        raise ValueError("Could not find parse_data_packet()")
-
-    body = match.group()
-    fields: list[DataPacketField] = []
-
-    # Match patterns like: range_q = _to_signed16(struct.unpack_from(">H", raw, 1)[0])
-    for m in re.finditer(
-        r'(\w+)\s*=\s*_to_signed16\(struct\.unpack_from\("(>[HIBhib])", raw, (\d+)\)',
-        body
-    ):
-        name = m.group(1)
-        fmt = m.group(2)
-        offset = int(m.group(3))
-        fmt_char = fmt[-1].upper()
-        size = {"H": 2, "I": 4, "B": 1}[fmt_char]
-        fields.append(DataPacketField(
-            name=name, byte_start=offset,
-            byte_end=offset + size - 1,
-            width_bits=size * 8
-        ))
-
-    # Match detection = raw[9] & 0x01
-    for m in re.finditer(r'(\w+)\s*=\s*raw\[(\d+)\]\s*&\s*(0x[0-9a-fA-F]+|\d+)', body):
-        name = m.group(1)
-        offset = int(m.group(2))
-        fields.append(DataPacketField(
-            name=name, byte_start=offset, byte_end=offset, width_bits=1
-        ))
-
-    fields.sort(key=lambda f: f.byte_start)
-    return fields
-
-
 def parse_python_status_fields(filepath: Path | None = None) -> list[StatusWordField]:
     """
     Extract bit shift/mask operations from parse_status_packet().
@@ -354,34 +306,63 @@ def parse_verilog_opcodes(filepath: Path | None = None) -> dict[int, OpcodeEntry
     return opcodes
 
 
+def _parse_verilog_defines(filepath: Path | None = None) -> dict[str, str]:
+    """Parse `define macros from radar_params.vh into {name: raw_value}."""
+    if filepath is None:
+        filepath = FPGA_DIR / "radar_params.vh"
+    if not filepath.exists():
+        return {}
+    defines: dict[str, str] = {}
+    for m in re.finditer(
+        r'`define\s+(\w+)\s+(.+?)(?://.*)?$',
+        filepath.read_text(),
+        re.MULTILINE,
+    ):
+        defines[m.group(1)] = m.group(2).strip()
+    return defines
+
+
+def _resolve_verilog_literal(val_str: str) -> int:
+    """Convert a Verilog literal (e.g. 6'b000_111 or 10000) to int."""
+    if "'" in val_str:
+        base_char = val_str.split("'")[1][0].lower()
+        digits = val_str.split("'")[1][1:].replace("_", "")
+        base = {"b": 2, "d": 10, "h": 16, "o": 8}[base_char]
+        return int(digits, base)
+    return int(val_str)
+
+
 def parse_verilog_reset_defaults(filepath: Path | None = None) -> dict[str, int]:
     """
     Parse the reset block from radar_system_top.v.
     Returns {register_name: reset_value}.
+    Resolves `define macros from radar_params.vh.
     """
     if filepath is None:
         filepath = FPGA_DIR / "radar_system_top.v"
     text = filepath.read_text()
+    defines = _parse_verilog_defines()
 
     defaults: dict[str, int] = {}
 
     # Match patterns like: host_radar_mode <= 2'b01;
     # Also: host_detect_threshold <= 16'd10000;
+    # Also: host_stream_control <= `RP_STREAM_CTRL_DEFAULT;
     for m in re.finditer(
-        r'(host_\w+)\s*<=\s*(\d+\'[bdho][0-9a-fA-F_]+|\d+)\s*;',
+        r'(host_\w+)\s*<=\s*(`\w+|\d+\'[bdho][0-9a-fA-F_]+|\d+)\s*;',
         text
     ):
         reg = m.group(1)
         val_str = m.group(2)
 
-        # Parse Verilog literal
-        if "'" in val_str:
-            base_char = val_str.split("'")[1][0].lower()
-            digits = val_str.split("'")[1][1:].replace("_", "")
-            base = {"b": 2, "d": 10, "h": 16, "o": 8}[base_char]
-            value = int(digits, base)
+        # Resolve macro or parse Verilog literal
+        if val_str.startswith("`"):
+            macro_name = val_str[1:]
+            if macro_name not in defines:
+                continue  # skip unresolvable macros
+            value = _resolve_verilog_literal(defines[macro_name])
         else:
-            value = int(val_str)
+            value = _resolve_verilog_literal(val_str)
 
         # Only keep first occurrence (the reset block comes before the
         # opcode decode which also has <= assignments)
@@ -436,15 +417,15 @@ def parse_verilog_packet_constants(
             return int(vlog_m.group(1))
         return int(val, 16) if val.startswith("0x") else int(val)
 
-    header_val = _find(r"localparam\s+HEADER\s*=\s*(\d+'h[0-9a-fA-F]+)")
+    _find(r"localparam\s+HEADER\s*=\s*(\d+'h[0-9a-fA-F]+)")  # bulk frames — no data header
     footer_val = _find(r"localparam\s+FOOTER\s*=\s*(\d+'h[0-9a-fA-F]+)")
     status_hdr = _find(r"localparam\s+STATUS_HEADER\s*=\s*(\d+'h[0-9a-fA-F]+)")
 
-    data_size = _find(r"DATA_PKT_LEN\s*=\s*(\d+'d\d+)")
     status_size = _find(r"STATUS_PKT_LEN\s*=\s*(\d+'d\d+)")
 
+    # FT2232H uses bulk per-frame transfers — no fixed data packet size.
+    # Only status packets have a fixed size.
     return {
-        "data": PacketConstants(header=header_val, footer=footer_val, size=data_size),
         "status": PacketConstants(header=status_hdr, footer=footer_val, size=status_size),
     }
 
@@ -558,76 +539,6 @@ def get_usb_interface_port_widths(filepath: Path | None = None) -> dict[str, int
 
     return widths
 
-
-def parse_verilog_data_mux(
-    filepath: Path | None = None,
-) -> list[DataPacketField]:
-    """
-    Parse the data_pkt_byte mux from usb_data_interface_ft2232h.v.
-    Returns fields with byte positions and signal names.
-    """
-    if filepath is None:
-        filepath = FPGA_DIR / "usb_data_interface_ft2232h.v"
-    text = filepath.read_text()
-
-    # Find the data mux case block
-    match = re.search(
-        r'always\s+@\(\*\)\s+begin\s+case\s*\(wr_byte_idx\)(.*?)endcase',
-        text, re.DOTALL
-    )
-    if not match:
-        raise ValueError("Could not find data_pkt_byte mux")
-
-    mux_body = match.group(1)
-    entries: list[tuple[int, str]] = []
-
-    for m in re.finditer(
-        r"5'd(\d+)\s*:\s*data_pkt_byte\s*=\s*(.+?);",
-        mux_body
-    ):
-        idx = int(m.group(1))
-        expr = m.group(2).strip()
-        entries.append((idx, expr))
-
-    # Group consecutive bytes by signal root name
-    fields: list[DataPacketField] = []
-    i = 0
-    while i < len(entries):
-        idx, expr = entries[i]
-        if expr == "HEADER" or expr == "FOOTER":
-            i += 1
-            continue
-
-        # Extract signal name (e.g., range_profile_cap from range_profile_cap[31:24])
-        sig_match = re.match(r'(\w+?)(?:\[|$)', expr)
-        if not sig_match:
-            i += 1
-            continue
-
-        signal = sig_match.group(1)
-        start_byte = idx
-        end_byte = idx
-
-        # Find consecutive bytes of the same signal
-        j = i + 1
-        while j < len(entries):
-            next_idx, next_expr = entries[j]
-            if next_expr.startswith(signal):
-                end_byte = next_idx
-                j += 1
-            else:
-                break
-
-        n_bytes = end_byte - start_byte + 1
-        fields.append(DataPacketField(
-            name=signal.replace("_cap", ""),
-            byte_start=start_byte,
-            byte_end=end_byte,
-            width_bits=n_bytes * 8,
-        ))
-        i = j
-
-    return fields
 
 
 # ===================================================================
@@ -803,7 +714,7 @@ def parse_radar_params_vh() -> dict[str, int]:
     """
     Parse `define values from radar_params.vh.
 
-    Returns dict like {"RP_FFT_SIZE": 1024, "RP_DECIMATION_FACTOR": 16, ...}.
+    Returns dict like {"RP_FFT_SIZE": 2048, "RP_DECIMATION_FACTOR": 4, ...}.
     Only parses defines with simple integer or Verilog literal values.
     Skips bit-width prefixed literals (e.g. 2'b00) — returns the numeric value.
     """

@@ -44,7 +44,7 @@ module usb_data_interface (
     //   0x01 = Set radar mode (value[1:0] -> mode_controller mode)
     //   0x02 = Single chirp trigger (value ignored, pulse cmd_valid)
     //   0x03 = Set CFAR threshold (value[15:0] -> threshold)
-    //   0x04 = Set stream control (value[2:0] -> enable range/doppler/cfar)
+    //   0x04 = Set stream control (value[5:0] -> stream enables + format bits)
     //   0x10-0x15 = Chirp timing configuration (Gap 2)
     //   0xFF = Status request (triggers status response packet)
     output reg [31:0] cmd_data,      // Last received command word
@@ -57,14 +57,14 @@ module usb_data_interface (
     // Bit 0 = range stream enable
     // Bit 1 = doppler stream enable
     // Bit 2 = cfar/detection stream enable
-    input wire [2:0] stream_control,
+    input wire [5:0] stream_control,
 
     // Gap 2: Status readback inputs (clk_100m domain, CDC'd internally)
     // When status_request pulses, the write FSM sends a status response
     // packet containing the current register values.
     input wire status_request,                 // 1-cycle pulse in clk_100m when 0xFF received
     input wire [15:0] status_cfar_threshold,   // Current CFAR threshold
-    input wire [2:0]  status_stream_ctrl,      // Current stream control
+    input wire [5:0]  status_stream_ctrl,      // Current stream control (6-bit)
     input wire [1:0]  status_radar_mode,       // Current radar mode
     input wire [15:0] status_long_chirp,       // Current long chirp cycles
     input wire [15:0] status_long_listen,      // Current long listen cycles
@@ -205,8 +205,8 @@ reg cfar_data_pending;
 // deadlock before host configures streams. With all streams enabled on
 // reset, the first range_valid triggers the write FSM which then blocks
 // forever on SEND_DOPPLER_DATA (Doppler hasn't produced data yet).
-(* ASYNC_REG = "TRUE" *) reg [2:0] stream_ctrl_sync_0;
-(* ASYNC_REG = "TRUE" *) reg [2:0] stream_ctrl_sync_1;
+    (* ASYNC_REG = "TRUE" *) reg [5:0] stream_ctrl_sync_0;
+    (* ASYNC_REG = "TRUE" *) reg [5:0] stream_ctrl_sync_1;
 wire stream_range_en   = stream_ctrl_sync_1[0];
 wire stream_doppler_en = stream_ctrl_sync_1[1];
 wire stream_cfar_en    = stream_ctrl_sync_1[2];
@@ -241,8 +241,8 @@ always @(posedge ft601_clk_in or negedge ft601_reset_n) begin
         doppler_imag_cap   <= 16'd0;
         cfar_detection_cap <= 1'b0;
         // Fix #5: Default to range-only on reset (prevents write FSM deadlock)
-        stream_ctrl_sync_0 <= 3'b001;
-        stream_ctrl_sync_1 <= 3'b001;
+        stream_ctrl_sync_0 <= 6'b000_001;
+        stream_ctrl_sync_1 <= 6'b000_001;
         // Gap 2: status request CDC reset
         status_req_sync <= 2'b00;
         status_req_sync_prev <= 1'b0;
@@ -264,9 +264,9 @@ always @(posedge ft601_clk_in or negedge ft601_reset_n) begin
         // Gap 2: Capture status snapshot when request arrives in ft601 domain
         if (status_req_ft601) begin
             // Pack register values into 5x 32-bit status words
-            // Word 0: {0xFF[31:24], mode[23:22], stream[21:19], 3'b000[18:16], threshold[15:0]}
+            // Word 0: {0xFF[31:24], mode[23:22], stream[21:16], threshold[15:0]}
             status_words[0] <= {8'hFF, status_radar_mode, status_stream_ctrl,
-                                3'b000, status_cfar_threshold};
+                                status_cfar_threshold};
             // Word 1: {long_chirp_cycles[15:0], long_listen_cycles[15:0]}
             status_words[1] <= {status_long_chirp, status_long_listen};
             // Word 2: {guard_cycles[15:0], short_chirp_cycles[15:0]}

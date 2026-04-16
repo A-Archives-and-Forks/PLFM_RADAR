@@ -3,7 +3,7 @@ v7.workers — QThread-based workers and demo target simulator.
 
 Classes:
   - RadarDataWorker  — reads from FT2232H via production RadarAcquisition,
-                       parses 0xAA/0xBB packets, assembles 64x32 frames,
+                       parses 0xAA/0xBB packets, assembles 512x32 frames,
                        runs host-side DSP, emits PyQt signals.
   - GPSDataWorker    — reads GPS frames from STM32 CDC, emits GPSData signals.
   - TargetSimulator  — QTimer-based demo target generator.
@@ -52,11 +52,11 @@ class RadarDataWorker(QThread):
     and emits PyQt signals with results.
 
     Uses production radar_protocol.py for all packet parsing and frame
-    assembly (11-byte 0xAA data packets → 64x32 RadarFrame).
+    assembly (bulk frames or legacy 11-byte 0xAA data packets → 512x32 RadarFrame).
     For replay, use ReplayWorker instead.
 
     Signals:
-        frameReady(RadarFrame)    — a complete 64x32 radar frame
+        frameReady(RadarFrame)    — a complete 512x32 radar frame
         statusReceived(object)    — StatusResponse from FPGA
         targetsUpdated(list)      — list of RadarTarget after host-side DSP
         errorOccurred(str)        — error message
@@ -368,7 +368,7 @@ class TargetSimulator(QObject):
 
         for t in self._targets:
             new_range = t.range - t.velocity * 0.5
-            if new_range < 50 or new_range > 1536:
+            if new_range < 50 or new_range > 3072:
                 continue  # target exits coverage — drop it
 
             new_vel = max(-150, min(150, t.velocity + random.uniform(-2, 2)))

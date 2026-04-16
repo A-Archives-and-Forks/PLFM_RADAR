@@ -56,7 +56,8 @@ log = logging.getLogger(__name__)
 # Twiddle factor file paths (relative to FPGA root)
 # ---------------------------------------------------------------------------
 _FPGA_DIR = Path(__file__).resolve().parents[2] / "9_2_FPGA"
-TWIDDLE_1024 = str(_FPGA_DIR / "fft_twiddle_1024.mem")
+TWIDDLE_2048 = str(_FPGA_DIR / "fft_twiddle_2048.mem")
+TWIDDLE_1024 = str(_FPGA_DIR / "fft_twiddle_1024.mem")  # kept for reference
 TWIDDLE_16 = str(_FPGA_DIR / "fft_twiddle_16.mem")
 
 # CFAR mode int→string mapping (FPGA register 0x24: 0=CA, 1=GO, 2=SO)
@@ -179,15 +180,19 @@ class SoftwareFPGA:
         # --- Stage 1: Range FFT (per chirp) ---
         range_i = np.zeros((n_chirps, n_samples), dtype=np.int64)
         range_q = np.zeros((n_chirps, n_samples), dtype=np.int64)
-        twiddle_1024 = TWIDDLE_1024 if os.path.exists(TWIDDLE_1024) else None
+        # Select twiddle file matching input FFT size
+        if n_samples >= 2048:
+            twiddle = TWIDDLE_2048 if os.path.exists(TWIDDLE_2048) else None
+        else:
+            twiddle = TWIDDLE_1024 if os.path.exists(TWIDDLE_1024) else None
         for c in range(n_chirps):
             range_i[c], range_q[c] = run_range_fft(
                 iq_i[c].astype(np.int64),
                 iq_q[c].astype(np.int64),
-                twiddle_file=twiddle_1024,
+                twiddle_file=twiddle,
             )
 
-        # --- Stage 2: Range bin decimation (1024 → 64) ---
+        # --- Stage 2: Range bin decimation (2048 → 512) ---
         decim_i, decim_q = run_range_bin_decimator(range_i, range_q)
 
         # --- Stage 3: MTI canceller (pre-Doppler, per-chirp) ---
@@ -230,6 +235,10 @@ class SoftwareFPGA:
         frame.range_doppler_q = np.clip(notch_q, -32768, 32767).astype(np.int16)
         frame.magnitude = mag
         frame.detections = det_mask
+        # Range profile: magnitude at Doppler bin 0 (zero-velocity / stationary).
+        # This differs from the FPGA USB stream which sends per-chirp decimated
+        # Manhattan magnitude.  The zero-Doppler slice is more useful for the
+        # host-side display because it represents coherently integrated range energy.
         frame.range_profile = np.sqrt(
             notch_i[:, 0].astype(np.float64) ** 2
             + notch_q[:, 0].astype(np.float64) ** 2
@@ -257,7 +266,7 @@ def quantize_raw_iq(
     n_chirps : int
         Number of chirps to keep (default 32, matching FPGA).
     n_samples : int
-        Number of samples per chirp to keep (default 1024, matching FFT).
+        Number of samples per chirp to keep (default 2048, matching FFT).
     peak_target : int
         Target peak magnitude after scaling (default 200, matching
         golden_reference INPUT_PEAK_TARGET).
@@ -270,8 +279,11 @@ def quantize_raw_iq(
         # (frames, chirps, samples) — take first frame
         raw_complex = raw_complex[0]
 
-    # Truncate to FPGA dimensions
-    block = raw_complex[:n_chirps, :n_samples]
+    # Truncate chirps, zero-pad samples if source is shorter than n_samples
+    block = np.zeros((n_chirps, n_samples), dtype=raw_complex.dtype)
+    avail_chirps = min(raw_complex.shape[0], n_chirps)
+    avail_samples = min(raw_complex.shape[1], n_samples)
+    block[:avail_chirps, :avail_samples] = raw_complex[:avail_chirps, :avail_samples]
 
     max_abs = np.max(np.abs(block))
     if max_abs == 0:

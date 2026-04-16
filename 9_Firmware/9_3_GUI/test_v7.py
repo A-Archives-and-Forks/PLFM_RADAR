@@ -66,8 +66,8 @@ class TestRadarSettings(unittest.TestCase):
     def test_defaults(self):
         s = _models().RadarSettings()
         self.assertEqual(s.system_frequency, 10.5e9)
-        self.assertEqual(s.coverage_radius, 1536)
-        self.assertEqual(s.max_distance, 1536)
+        self.assertEqual(s.coverage_radius, 3072)
+        self.assertEqual(s.max_distance, 3072)
 
 
 class TestGPSData(unittest.TestCase):
@@ -430,16 +430,16 @@ class TestWaveformConfig(unittest.TestCase):
         self.assertEqual(wc.chirp_duration_s, 30e-6)
         self.assertEqual(wc.pri_s, 167e-6)
         self.assertEqual(wc.center_freq_hz, 10.5e9)
-        self.assertEqual(wc.n_range_bins, 64)
+        self.assertEqual(wc.n_range_bins, 512)
         self.assertEqual(wc.n_doppler_bins, 32)
-        self.assertEqual(wc.fft_size, 1024)
-        self.assertEqual(wc.decimation_factor, 16)
+        self.assertEqual(wc.fft_size, 2048)
+        self.assertEqual(wc.decimation_factor, 4)
 
     def test_range_resolution(self):
-        """bin_spacing_m should be ~24.0 m/bin with PLFM defaults."""
+        """bin_spacing_m should be ~6.0 m/bin with PLFM defaults."""
         from v7.models import WaveformConfig
         wc = WaveformConfig()
-        self.assertAlmostEqual(wc.bin_spacing_m, 23.98, places=1)
+        self.assertAlmostEqual(wc.bin_spacing_m, 5.996, places=1)
 
     def test_range_resolution_physical(self):
         """range_resolution_m = c/(2*BW), ~7.5 m at 20 MHz BW."""
@@ -460,7 +460,7 @@ class TestWaveformConfig(unittest.TestCase):
         """max_range_m = bin_spacing * n_range_bins."""
         from v7.models import WaveformConfig
         wc = WaveformConfig()
-        self.assertAlmostEqual(wc.max_range_m, wc.bin_spacing_m * 64, places=1)
+        self.assertAlmostEqual(wc.max_range_m, wc.bin_spacing_m * 512, places=1)
 
     def test_max_velocity(self):
         """max_velocity_mps = velocity_resolution * n_doppler_bins / 2."""
@@ -613,15 +613,15 @@ class TestSoftwareFPGASignalChain(unittest.TestCase):
         from v7.software_fpga import SoftwareFPGA
         from radar_protocol import RadarFrame
 
-        # Load decimated range data as minimal input (32 chirps x 64 bins)
+        # Load decimated range data as minimal input (32 chirps x 512 bins)
         dec_i = np.load(os.path.join(self.COSIM_DIR, "decimated_range_i.npy"))
         dec_q = np.load(os.path.join(self.COSIM_DIR, "decimated_range_q.npy"))
 
-        # Build fake 1024-sample chirps from decimated data (pad with zeros)
+        # Build fake 2048-sample chirps from decimated data (pad with zeros)
         n_chirps = dec_i.shape[0]
-        iq_i = np.zeros((n_chirps, 1024), dtype=np.int64)
-        iq_q = np.zeros((n_chirps, 1024), dtype=np.int64)
-        # Put decimated data into first 64 bins so FFT has something
+        iq_i = np.zeros((n_chirps, 2048), dtype=np.int64)
+        iq_q = np.zeros((n_chirps, 2048), dtype=np.int64)
+        # Put decimated data into first bins so FFT has something
         iq_i[:, :dec_i.shape[1]] = dec_i
         iq_q[:, :dec_q.shape[1]] = dec_q
 
@@ -631,11 +631,11 @@ class TestSoftwareFPGASignalChain(unittest.TestCase):
         self.assertIsInstance(frame, RadarFrame)
         self.assertEqual(frame.frame_number, 42)
         self.assertAlmostEqual(frame.timestamp, 1.0)
-        self.assertEqual(frame.range_doppler_i.shape, (64, 32))
-        self.assertEqual(frame.range_doppler_q.shape, (64, 32))
-        self.assertEqual(frame.magnitude.shape, (64, 32))
-        self.assertEqual(frame.detections.shape, (64, 32))
-        self.assertEqual(frame.range_profile.shape, (64,))
+        self.assertEqual(frame.range_doppler_i.shape, (512, 32))
+        self.assertEqual(frame.range_doppler_q.shape, (512, 32))
+        self.assertEqual(frame.magnitude.shape, (512, 32))
+        self.assertEqual(frame.detections.shape, (512, 32))
+        self.assertEqual(frame.range_profile.shape, (512,))
         self.assertEqual(frame.detection_count, int(frame.detections.sum()))
 
     def test_cfar_enable_changes_detections(self):
@@ -644,8 +644,8 @@ class TestSoftwareFPGASignalChain(unittest.TestCase):
             self.skipTest("co-sim data not found")
         from v7.software_fpga import SoftwareFPGA
 
-        iq_i = np.zeros((32, 1024), dtype=np.int64)
-        iq_q = np.zeros((32, 1024), dtype=np.int64)
+        iq_i = np.zeros((32, 2048), dtype=np.int64)
+        iq_q = np.zeros((32, 2048), dtype=np.int64)
         # Inject a single strong tone in bin 10 of every chirp
         iq_i[:, 10] = 5000
         iq_q[:, 10] = 3000
@@ -662,8 +662,8 @@ class TestSoftwareFPGASignalChain(unittest.TestCase):
         # Just verify both produce valid frames — exact counts depend on chain
         self.assertIsNotNone(frame_thresh)
         self.assertIsNotNone(frame_cfar)
-        self.assertEqual(frame_thresh.magnitude.shape, (64, 32))
-        self.assertEqual(frame_cfar.magnitude.shape, (64, 32))
+        self.assertEqual(frame_thresh.magnitude.shape, (512, 32))
+        self.assertEqual(frame_cfar.magnitude.shape, (512, 32))
 
 
 class TestGoldenReferenceReplayFixtures(unittest.TestCase):
@@ -794,11 +794,11 @@ class TestGoldenReferenceReplayFixtures(unittest.TestCase):
         from v7.software_fpga import SoftwareFPGA
         from radar_protocol import RadarFrame
 
-        # Use decimated data padded to 1024 as input (so range FFT has content)
+        # Use decimated data padded to 2048 as input (so range FFT has content)
         dec_i = self._load("decimated_range_i.npy")
         dec_q = self._load("decimated_range_q.npy")
-        iq_i = np.zeros((32, 1024), dtype=np.int64)
-        iq_q = np.zeros((32, 1024), dtype=np.int64)
+        iq_i = np.zeros((32, 2048), dtype=np.int64)
+        iq_q = np.zeros((32, 2048), dtype=np.int64)
         iq_i[:, :dec_i.shape[1]] = dec_i
         iq_q[:, :dec_q.shape[1]] = dec_q
 
@@ -809,10 +809,10 @@ class TestGoldenReferenceReplayFixtures(unittest.TestCase):
         frame = fpga.process_chirps(iq_i, iq_q, frame_number=99)
 
         self.assertIsInstance(frame, RadarFrame)
-        self.assertEqual(frame.range_doppler_i.shape, (64, 32))
-        self.assertEqual(frame.magnitude.shape, (64, 32))
-        self.assertEqual(frame.detections.shape, (64, 32))
-        self.assertEqual(frame.range_profile.shape, (64,))
+        self.assertEqual(frame.range_doppler_i.shape, (512, 32))
+        self.assertEqual(frame.magnitude.shape, (512, 32))
+        self.assertEqual(frame.detections.shape, (512, 32))
+        self.assertEqual(frame.range_profile.shape, (512,))
         self.assertEqual(frame.frame_number, 99)
 
     def test_software_fpga_wiring_matches_manual_chain(self):
@@ -824,8 +824,8 @@ class TestGoldenReferenceReplayFixtures(unittest.TestCase):
         This catches wiring bugs: wrong stage order, wrong default params,
         missing DC notch, etc.
         """
-        from v7.software_fpga import SoftwareFPGA, TWIDDLE_1024, TWIDDLE_16
-        if not os.path.exists(TWIDDLE_1024) or not os.path.exists(TWIDDLE_16):
+        from v7.software_fpga import SoftwareFPGA, TWIDDLE_2048, TWIDDLE_16
+        if not os.path.exists(TWIDDLE_2048) or not os.path.exists(TWIDDLE_16):
             self.skipTest("twiddle files not found")
 
         import sys as _sys
@@ -843,8 +843,8 @@ class TestGoldenReferenceReplayFixtures(unittest.TestCase):
 
         # Deterministic synthetic input — small int16 values to avoid overflow
         rng = np.random.RandomState(42)
-        iq_i = rng.randint(-500, 500, size=(32, 1024), dtype=np.int64)
-        iq_q = rng.randint(-500, 500, size=(32, 1024), dtype=np.int64)
+        iq_i = rng.randint(-500, 500, size=(32, 2048), dtype=np.int64)
+        iq_q = rng.randint(-500, 500, size=(32, 2048), dtype=np.int64)
 
         # --- SoftwareFPGA path (what we're testing) ---
         fpga = SoftwareFPGA()
@@ -858,7 +858,7 @@ class TestGoldenReferenceReplayFixtures(unittest.TestCase):
         range_q = np.zeros_like(iq_q)
         for c in range(32):
             range_i[c], range_q[c] = run_range_fft(
-                iq_i[c], iq_q[c], twiddle_file=TWIDDLE_1024,
+                iq_i[c], iq_q[c], twiddle_file=TWIDDLE_2048,
             )
         dec_i, dec_q = run_range_bin_decimator(range_i, range_q)
         mti_i, mti_q = run_mti_canceller(dec_i, dec_q, enable=True)
@@ -897,24 +897,24 @@ class TestQuantizeRawIQ(unittest.TestCase):
     def test_3d_input(self):
         """3-D (frames, chirps, samples) → uses first frame."""
         from v7.software_fpga import quantize_raw_iq
-        raw = np.random.randn(5, 32, 1024) + 1j * np.random.randn(5, 32, 1024)
+        raw = np.random.randn(5, 32, 2048) + 1j * np.random.randn(5, 32, 2048)
         iq_i, iq_q = quantize_raw_iq(raw)
-        self.assertEqual(iq_i.shape, (32, 1024))
-        self.assertEqual(iq_q.shape, (32, 1024))
+        self.assertEqual(iq_i.shape, (32, 2048))
+        self.assertEqual(iq_q.shape, (32, 2048))
         self.assertTrue(np.all(np.abs(iq_i) <= 32767))
         self.assertTrue(np.all(np.abs(iq_q) <= 32767))
 
     def test_2d_input(self):
         """2-D (chirps, samples) → works directly."""
         from v7.software_fpga import quantize_raw_iq
-        raw = np.random.randn(32, 1024) + 1j * np.random.randn(32, 1024)
+        raw = np.random.randn(32, 2048) + 1j * np.random.randn(32, 2048)
         iq_i, _iq_q = quantize_raw_iq(raw)
-        self.assertEqual(iq_i.shape, (32, 1024))
+        self.assertEqual(iq_i.shape, (32, 2048))
 
     def test_zero_input(self):
         """All-zero complex input → all-zero output."""
         from v7.software_fpga import quantize_raw_iq
-        raw = np.zeros((32, 1024), dtype=np.complex128)
+        raw = np.zeros((32, 2048), dtype=np.complex128)
         iq_i, iq_q = quantize_raw_iq(raw)
         self.assertTrue(np.all(iq_i == 0))
         self.assertTrue(np.all(iq_q == 0))
@@ -952,7 +952,7 @@ class TestDetectFormat(unittest.TestCase):
         from v7.replay import detect_format, ReplayFormat
         import tempfile
         with tempfile.NamedTemporaryFile(suffix=".npy", delete=False) as f:
-            np.save(f, np.zeros((2, 32, 1024), dtype=np.complex128))
+            np.save(f, np.zeros((2, 32, 2048), dtype=np.complex128))
             tmp = f.name
         try:
             self.assertEqual(detect_format(tmp), ReplayFormat.RAW_IQ_NPY)
@@ -1004,8 +1004,8 @@ class TestReplayEngineCosim(unittest.TestCase):
         engine = ReplayEngine(self.COSIM_DIR)
         frame = engine.get_frame(0)
         self.assertIsInstance(frame, RadarFrame)
-        self.assertEqual(frame.range_doppler_i.shape, (64, 32))
-        self.assertEqual(frame.magnitude.shape, (64, 32))
+        self.assertEqual(frame.range_doppler_i.shape, (512, 32))
+        self.assertEqual(frame.magnitude.shape, (512, 32))
 
     def test_get_frame_out_of_range(self):
         if not self._available():
@@ -1055,7 +1055,7 @@ class TestReplayEngineRawIQ(unittest.TestCase):
             engine = ReplayEngine(tmp, software_fpga=fpga)
             frame = engine.get_frame(0)
             self.assertIsInstance(frame, RadarFrame)
-            self.assertEqual(frame.range_doppler_i.shape, (64, 32))
+            self.assertEqual(frame.range_doppler_i.shape, (512, 32))
             self.assertEqual(frame.frame_number, 0)
         finally:
             os.unlink(tmp)
@@ -1100,7 +1100,7 @@ class TestReplayEngineHDF5(unittest.TestCase):
         try:
             with h5py.File(tmp, "w") as hf:
                 hf.attrs["creator"] = "test"
-                hf.attrs["range_bins"] = 64
+                hf.attrs["range_bins"] = 512
                 hf.attrs["doppler_bins"] = 32
                 grp = hf.create_group("frames")
                 for i in range(3):
@@ -1109,15 +1109,15 @@ class TestReplayEngineHDF5(unittest.TestCase):
                     fg.attrs["frame_number"] = i
                     fg.attrs["detection_count"] = 0
                     fg.create_dataset("range_doppler_i",
-                                      data=np.zeros((64, 32), dtype=np.int16))
+                                      data=np.zeros((512, 32), dtype=np.int16))
                     fg.create_dataset("range_doppler_q",
-                                      data=np.zeros((64, 32), dtype=np.int16))
+                                      data=np.zeros((512, 32), dtype=np.int16))
                     fg.create_dataset("magnitude",
-                                      data=np.zeros((64, 32), dtype=np.float64))
+                                      data=np.zeros((512, 32), dtype=np.float64))
                     fg.create_dataset("detections",
-                                      data=np.zeros((64, 32), dtype=np.uint8))
+                                      data=np.zeros((512, 32), dtype=np.uint8))
                     fg.create_dataset("range_profile",
-                                      data=np.zeros(64, dtype=np.float64))
+                                      data=np.zeros(512, dtype=np.float64))
 
             engine = ReplayEngine(tmp)
             self.assertEqual(engine.fmt, ReplayFormat.HDF5)
@@ -1126,7 +1126,7 @@ class TestReplayEngineHDF5(unittest.TestCase):
             frame = engine.get_frame(1)
             self.assertIsInstance(frame, RadarFrame)
             self.assertEqual(frame.frame_number, 1)
-            self.assertEqual(frame.range_doppler_i.shape, (64, 32))
+            self.assertEqual(frame.range_doppler_i.shape, (512, 32))
             engine.close()
         finally:
             os.unlink(tmp)
@@ -1161,9 +1161,9 @@ class TestExtractTargetsFromFrame(unittest.TestCase):
         """Detection at range bin 10 → range = 10 * range_resolution."""
         from v7.processing import extract_targets_from_frame
         frame = self._make_frame(det_cells=[(10, 16)])  # dbin=16 = center → vel=0
-        targets = extract_targets_from_frame(frame, bin_spacing=23.98)
+        targets = extract_targets_from_frame(frame, bin_spacing=5.996)
         self.assertEqual(len(targets), 1)
-        self.assertAlmostEqual(targets[0].range, 10 * 23.98, places=1)
+        self.assertAlmostEqual(targets[0].range, 10 * 5.996, places=1)
         self.assertAlmostEqual(targets[0].velocity, 0.0, places=2)
 
     def test_velocity_sign(self):

@@ -109,11 +109,11 @@ class RadarSettings:
     the actual waveform parameters.
     """
     system_frequency: float = 10.5e9    # Hz (PLFM TX LO, verified from ADF4382 config)
-    range_bin_spacing: float = 24.0    # Meters per decimated range bin (c/(2*100MSPS)*16)
+    range_bin_spacing: float = 6.0      # Meters per decimated range bin (c/(2*100MSPS)*4)
     velocity_resolution: float = 2.67  # m/s per Doppler bin (lam/(2*32*167us))
-    max_distance: float = 1536         # Max detection range (m) -- 64 bins x 24 m (3 km mode)
-    map_size: float = 1536             # Map display size (m)
-    coverage_radius: float = 1536      # Map coverage radius (m)
+    max_distance: float = 3072         # Max detection range (m) -- 512 bins x 6 m (3 km mode)
+    map_size: float = 3072             # Map display size (m)
+    coverage_radius: float = 3072      # Map coverage radius (m)
 
 
 @dataclass
@@ -210,10 +210,10 @@ class WaveformConfig:
     chirp_duration_s: float = 30e-6      # Long chirp ramp (informational only)
     pri_s: float = 167e-6               # Pulse repetition interval (chirp + listen)
     center_freq_hz: float = 10.5e9       # TX LO carrier (verified: ADF4382 config)
-    n_range_bins: int = 64               # After decimation (3 km mode)
+    n_range_bins: int = 512              # After decimation (3 km mode)
     n_doppler_bins: int = 32             # After Doppler FFT
-    fft_size: int = 1024                 # Pre-decimation FFT length
-    decimation_factor: int = 16          # 1024 → 64
+    fft_size: int = 2048                 # Pre-decimation FFT length
+    decimation_factor: int = 4           # 2048 → 512
 
     @property
     def bin_spacing_m(self) -> float:

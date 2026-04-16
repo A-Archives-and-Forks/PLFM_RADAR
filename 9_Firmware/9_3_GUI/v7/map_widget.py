@@ -98,7 +98,7 @@ class RadarMapWidget(QWidget):
         )
         self._targets: list[RadarTarget] = []
         self._pending_targets: list[RadarTarget] | None = None
-        self._coverage_radius = 1_536   # metres (64 bins x 24 m, 3 km mode)
+        self._coverage_radius = 3_072   # metres (512 bins x 6 m, 3 km mode)
         self._tile_server = TileServer.OPENSTREETMAP
         self._show_coverage = True
         self._show_trails = False

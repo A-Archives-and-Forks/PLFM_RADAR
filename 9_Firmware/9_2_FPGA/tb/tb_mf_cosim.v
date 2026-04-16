@@ -5,7 +5,7 @@
  * Co-simulation testbench for matched_filter_processing_chain.v
  * (SIMULATION behavioral branch).
  *
- * Loads signal and reference hex files, feeds 1024 samples,
+ * Loads signal and reference hex files, feeds 2048 samples,
  * captures range profile output to CSV for comparison with
  * the Python model golden reference.
  *
@@ -25,9 +25,9 @@ module tb_mf_cosim;
 // ============================================================================
 // Parameters
 // ============================================================================
-localparam FFT_SIZE   = 1024;
+localparam FFT_SIZE   = 2048;
 localparam CLK_PERIOD = 10.0;    // 100 MHz
-localparam TIMEOUT    = 200000;  // Max clocks to wait for completion
+localparam TIMEOUT    = 400000;  // Max clocks to wait for completion
 
 // ============================================================================
 // Scenario selection
@@ -57,10 +57,10 @@ localparam TIMEOUT    = 200000;  // Max clocks to wait for completion
 `else
   // Default: SCENARIO_CHIRP
   localparam [511:0] SCENARIO_NAME    = "chirp";
-  localparam [511:0] SIG_I_HEX        = "tb/cosim/bb_mf_test_i.hex";
-  localparam [511:0] SIG_Q_HEX        = "tb/cosim/bb_mf_test_q.hex";
-  localparam [511:0] REF_I_HEX        = "tb/cosim/ref_chirp_i.hex";
-  localparam [511:0] REF_Q_HEX        = "tb/cosim/ref_chirp_q.hex";
+  localparam [511:0] SIG_I_HEX        = "tb/cosim/mf_sig_chirp_i.hex";
+  localparam [511:0] SIG_Q_HEX        = "tb/cosim/mf_sig_chirp_q.hex";
+  localparam [511:0] REF_I_HEX        = "tb/cosim/mf_ref_chirp_i.hex";
+  localparam [511:0] REF_Q_HEX        = "tb/cosim/mf_ref_chirp_q.hex";
   localparam [511:0] OUTPUT_CSV       = "tb/cosim/rtl_mf_chirp.csv";
 `endif
 
@@ -189,7 +189,7 @@ initial begin
     apply_reset;
     check(chain_state == 4'd0, "State is IDLE after reset");
 
-    // ---- Feed 1024 samples ----
+    // ---- Feed 2048 samples ----
     $display("\nFeeding %0d samples...", FFT_SIZE);
     for (i = 0; i < FFT_SIZE; i = i + 1) begin
         @(posedge clk);
@@ -226,7 +226,7 @@ initial begin
     $display("Captured %0d output samples (waited %0d clocks)", cap_count, wait_count);
 
     // Check that we went through output state
-    check(cap_count == FFT_SIZE, "Got 1024 output samples");
+    check(cap_count == FFT_SIZE, "Got 2048 output samples");
 
     // ---- Wait for DONE -> IDLE ----
     i = 0;

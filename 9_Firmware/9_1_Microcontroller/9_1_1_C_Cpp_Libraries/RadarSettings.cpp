@@ -14,8 +14,8 @@ void RadarSettings::resetToDefaults() {
     freq_max = 30.0e6;           // 30 MHz
     prf1 = 1000.0;               // 1 kHz
     prf2 = 2000.0;               // 2 kHz
-    max_distance = 1536.0;       // 1536 m (64 bins × 24 m, 3 km mode)
-    map_size = 1536.0;           // 1536 m
+    max_distance = 3072.0;       // 3072 m (512 bins × 6 m, 3 km mode)
+    map_size = 3072.0;           // 3072 m
     
     settings_valid = true;
 }

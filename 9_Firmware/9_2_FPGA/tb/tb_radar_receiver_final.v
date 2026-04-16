@@ -12,7 +12,7 @@
 //     Signals: dut.ddc_out_i [17:0], dut.ddc_out_q [17:0], dut.ddc_valid_i
 //   Tap 2 (Doppler output) - structural + bounds checks (deterministic after MF)
 //     Signals: doppler_output[31:0], doppler_valid, doppler_bin[4:0],
-//              range_bin_out[5:0]
+//              range_bin_out[8:0]
 //
 // Strategy:
 //   - Uses behavioral stub for ad9484_interface_400m (no Xilinx primitives)
@@ -92,7 +92,7 @@ end
 wire [31:0] doppler_output;
 wire doppler_valid;
 wire [4:0] doppler_bin;
-wire [5:0] range_bin_out;
+wire [8:0] range_bin_out;
 
 radar_receiver_final dut (
     .clk(clk_100m),
@@ -116,6 +116,8 @@ radar_receiver_final dut (
     .range_profile_i_out(),
     .range_profile_q_out(),
     .range_profile_valid_out(),
+    .decimated_range_mag_out(),
+    .decimated_range_valid_out(),
 
     // Host command inputs (Gap 4) — default auto-scan, no trigger
     .host_mode(2'b01),
@@ -199,7 +201,7 @@ end
 // ============================================================================
 integer doppler_output_count;
 integer doppler_frame_count;
-reg [63:0] range_bin_seen;     // Bitmap: which range bins appeared
+reg [511:0] range_bin_seen;    // Bitmap: which range bins appeared
 reg [31:0] doppler_bin_seen;   // Bitmap: which Doppler bins appeared
 integer nonzero_output_count;
 reg [31:0] first_doppler_time; // Cycle when first doppler_valid appears
@@ -213,21 +215,21 @@ reg frame_done_prev;
 integer csv_fd;
 
 // Duplicate detection: one-hot bitmap per (range_bin, doppler_bin)
-// 64 range bins x 32 doppler bins = 2048 bits -> use an array of 64 x 32-bit regs
-reg [31:0] index_seen [0:63];
+// 512 range bins x 32 doppler bins = 16384 bits -> use an array of 512 x 32-bit regs
+reg [31:0] index_seen [0:511];
 integer dup_count;
 
 // Bounds check B2: Doppler energy tracking per range bin
 // For each range bin, track peak |I|+|Q| across all 32 Doppler bins
 // and total energy. Verifies pipeline computes non-trivial Doppler spectra.
-reg [31:0] peak_dbin_mag [0:63]; // max |I|+|Q| across all Doppler bins
-reg [31:0] total_dbin_energy [0:63]; // sum of |I|+|Q| across all 32 Doppler bins
+reg [31:0] peak_dbin_mag [0:511]; // max |I|+|Q| across all Doppler bins
+reg [31:0] total_dbin_energy [0:511]; // sum of |I|+|Q| across all 32 Doppler bins
 integer b2_init_idx;
 
 initial begin
     doppler_output_count = 0;
     doppler_frame_count = 0;
-    range_bin_seen = 64'd0;
+    range_bin_seen = 512'd0;
     doppler_bin_seen = 32'd0;
     nonzero_output_count = 0;
     first_doppler_seen = 0;
@@ -236,7 +238,7 @@ initial begin
     frame_done_prev = 0;
     dup_count = 0;
 
-    for (b2_init_idx = 0; b2_init_idx < 64; b2_init_idx = b2_init_idx + 1) begin
+    for (b2_init_idx = 0; b2_init_idx < 512; b2_init_idx = b2_init_idx + 1) begin
         index_seen[b2_init_idx]      = 32'd0;
         peak_dbin_mag[b2_init_idx]   = 32'd0;
         total_dbin_energy[b2_init_idx] = 32'd0;
@@ -257,8 +259,8 @@ always @(posedge clk_100m) begin
         frame_output_count = frame_output_count + 1;
 
         // Track which bins we've seen
-        if (range_bin_out < 64)
-            range_bin_seen = range_bin_seen | (64'd1 << range_bin_out);
+        if (range_bin_out < 512)
+            range_bin_seen = range_bin_seen | (512'd1 << range_bin_out);
         if (doppler_bin < 32)
             doppler_bin_seen = doppler_bin_seen | (32'd1 << doppler_bin);
 
@@ -282,7 +284,7 @@ always @(posedge clk_100m) begin
             $display("[INFO] %0d doppler outputs so far (t=%0t)", doppler_output_count, $time);
 
         // ---- Duplicate detection (B5) ----
-        if (range_bin_out < 64 && doppler_bin < 32) begin
+        if (range_bin_out < 512 && doppler_bin < 32) begin
             if (index_seen[range_bin_out][doppler_bin]) begin
                 dup_count = dup_count + 1;
                 if (dup_count <= 10)
@@ -299,7 +301,7 @@ always @(posedge clk_100m) begin
         mag_q = (mag_q_signed < 0) ? -mag_q_signed : mag_q_signed;
         mag_sum = mag_i + mag_q;
 
-        if (range_bin_out < 64) begin
+        if (range_bin_out < 512) begin
             total_dbin_energy[range_bin_out] = total_dbin_energy[range_bin_out] + mag_sum;
             if (mag_sum > peak_dbin_mag[range_bin_out])
                 peak_dbin_mag[range_bin_out] = mag_sum;
@@ -324,11 +326,25 @@ reg [31:0] mf_valid_count;
 reg [31:0] range_decim_count;
 reg [31:0] range_data_valid_count;
 
+// ============================================================================
+// PULSE-WIDTH ASSERTION: doppler_frame_done must be exactly 1 cycle
+// ============================================================================
+// radar_receiver_final converts the doppler_processor level signal to a
+// single-cycle pulse via an edge detector. If this breaks, USB re-toggles
+// frame_ready every cycle and AGC re-applies gain adjustments every cycle.
+// This monitor catches that class of integration boundary bugs.
+integer frame_done_consecutive;
+integer frame_done_pulse_violations;
+integer frame_done_pulse_count;   // total pulses seen (rising edges)
+
 initial begin
     ddc_valid_count = 0;
     mf_valid_count = 0;
     range_decim_count = 0;
     range_data_valid_count = 0;
+    frame_done_consecutive = 0;
+    frame_done_pulse_violations = 0;
+    frame_done_pulse_count = 0;
 end
 
 always @(posedge clk_100m) begin
@@ -336,6 +352,23 @@ always @(posedge clk_100m) begin
     if (dut.range_valid) mf_valid_count = mf_valid_count + 1;
     if (dut.decimated_range_valid) range_decim_count = range_decim_count + 1;
     if (dut.range_data_valid) range_data_valid_count = range_data_valid_count + 1;
+
+    // Pulse-width monitor for doppler_frame_done
+    if (reset_n) begin
+        if (dut.doppler_frame_done) begin
+            if (frame_done_consecutive == 0)
+                frame_done_pulse_count = frame_done_pulse_count + 1;
+            frame_done_consecutive = frame_done_consecutive + 1;
+            if (frame_done_consecutive > 1) begin
+                frame_done_pulse_violations = frame_done_pulse_violations + 1;
+                if (frame_done_pulse_violations <= 3)
+                    $display("[FAIL] doppler_frame_done HIGH for %0d consecutive cycles at t=%0t",
+                             frame_done_consecutive, $time);
+            end
+        end else begin
+            frame_done_consecutive = 0;
+        end
+    end
 end
 
 // Periodic progress dump
@@ -394,7 +427,7 @@ end
 // 1. DDC pipeline fill: ~4 sys_clk cycles
 // 2. MF overlap-save buffer fill: 896 valid DDC samples
 // 3. Latency buffer priming: 3187 valid_in assertions
-// 4. 1024 MF outputs -> range_bin_decimator -> 64 decimated outputs
+// 4. 2048 MF outputs -> range_bin_decimator -> 512 decimated outputs
 // 5. 32 chirps of decimated data -> Doppler FFT
 //
 // With shortened mode controller timing (~600 cycles per chirp pair),
@@ -483,24 +516,24 @@ initial begin
     check(doppler_output_count > 0,
           "S4: Doppler processor produces outputs (doppler_valid asserted)");
 
-    // ---- CHECK S5: Correct output count per frame (legacy: >= 2048) ----
+    // ---- CHECK S5: Correct output count per frame (>= 16384) ----
     if (doppler_frame_count > 0) begin
-        check(doppler_output_count >= 2048,
-              "S5: At least 2048 doppler outputs (one full frame: 64 rbins x 32 dbins)");
+        check(doppler_output_count >= 16384,
+              "S5: At least 16384 doppler outputs (one full frame: 512 rbins x 32 dbins)");
     end else begin
-        check(0, "S5: At least 2048 doppler outputs (NO FRAME COMPLETED)");
+        check(0, "S5: At least 16384 doppler outputs (NO FRAME COMPLETED)");
     end
 
     // ---- CHECK S6: Range bin coverage ----
     begin : count_range_bins
         integer rb_count, rb_i;
         rb_count = 0;
-        for (rb_i = 0; rb_i < 64; rb_i = rb_i + 1) begin
+        for (rb_i = 0; rb_i < 512; rb_i = rb_i + 1) begin
             if (range_bin_seen[rb_i]) rb_count = rb_count + 1;
         end
-        $display("[INFO] Unique range bins seen: %0d / 64", rb_count);
-        check(rb_count == 64,
-              "S6: All 64 range bins present in Doppler output");
+        $display("[INFO] Unique range bins seen: %0d / 512", rb_count);
+        check(rb_count == 512,
+              "S6: All 512 range bins present in Doppler output");
     end
 
     // ---- CHECK S7: Doppler bin coverage ----
@@ -531,6 +564,16 @@ initial begin
     check(ddc_valid_count > 100,
           "S10: DDC produced substantial output (>100 valid samples)");
 
+    // ---- CHECK S11: frame_complete pulse-width (integration boundary) ----
+    // doppler_frame_done must be exactly 1 cycle wide. If the edge detector
+    // in radar_receiver_final is broken or removed, this catches it.
+    $display("[INFO] doppler_frame_done: %0d pulses, %0d pulse-width violations",
+             frame_done_pulse_count, frame_done_pulse_violations);
+    check(frame_done_pulse_count > 0,
+          "S11a: At least one doppler_frame_done pulse observed");
+    check(frame_done_pulse_violations == 0,
+          "S11b: doppler_frame_done is single-cycle pulse (no multi-cycle violations)");
+
     // ================================================================
     // BOUNDS CHECKS
     // ================================================================
@@ -557,7 +600,7 @@ initial begin
         nontrivial_count = 0;
         min_peak = 32'h7FFFFFFF;
         max_peak = 0;
-        for (b2_rb = 0; b2_rb < 64; b2_rb = b2_rb + 1) begin
+        for (b2_rb = 0; b2_rb < 512; b2_rb = b2_rb + 1) begin
             if (peak_dbin_mag[b2_rb] > 0)
                 nontrivial_count = nontrivial_count + 1;
             if (peak_dbin_mag[b2_rb] < min_peak)
@@ -565,10 +608,10 @@ initial begin
             if (peak_dbin_mag[b2_rb] > max_peak)
                 max_peak = peak_dbin_mag[b2_rb];
         end
-        $display("  Doppler peak mag: min=%0d max=%0d, non-trivial in %0d/64 range bins",
+        $display("  Doppler peak mag: min=%0d max=%0d, non-trivial in %0d/512 range bins",
                  min_peak, max_peak, nontrivial_count);
-        // All 64 range bins must have non-zero peak Doppler energy
-        check(nontrivial_count == 64,
+        // All 512 range bins must have non-zero peak Doppler energy
+        check(nontrivial_count == 512,
               "B2a: All range bins have non-trivial Doppler energy");
         // Peak magnitude should be bounded (not overflowing to max signed value)
         check(max_peak < 32000,
@@ -576,23 +619,23 @@ initial begin
     end
 
     // ---- B3: Exact Doppler Output Count ----
-    $display("  Doppler output count: %0d (expected 2048)", doppler_output_count);
-    check(doppler_output_count == 2048,
-          "B3: Exact output count = 2048 (64 range x 32 Doppler)");
+    $display("  Doppler output count: %0d (expected 16384)", doppler_output_count);
+    check(doppler_output_count == 16384,
+          "B3: Exact output count = 16384 (512 range x 32 Doppler)");
 
     // ---- B4: Full Range/Doppler Bin Coverage (exact) ----
     begin : b4_check_block
         integer b4_rb_count, b4_db_count, b4_i;
         b4_rb_count = 0;
         b4_db_count = 0;
-        for (b4_i = 0; b4_i < 64; b4_i = b4_i + 1) begin
+        for (b4_i = 0; b4_i < 512; b4_i = b4_i + 1) begin
             if (range_bin_seen[b4_i]) b4_rb_count = b4_rb_count + 1;
         end
         for (b4_i = 0; b4_i < 32; b4_i = b4_i + 1) begin
             if (doppler_bin_seen[b4_i]) b4_db_count = b4_db_count + 1;
         end
-        check(b4_rb_count == 64 && b4_db_count == 32,
-              "B4: Full bin coverage: 64 range x 32 Doppler");
+        check(b4_rb_count == 512 && b4_db_count == 32,
+              "B4: Full bin coverage: 512 range x 32 Doppler");
     end
 
     // ---- B5: No Duplicate Indices ----

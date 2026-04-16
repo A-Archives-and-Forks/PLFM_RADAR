@@ -127,12 +127,12 @@ class TestRadarProtocol(unittest.TestCase):
                             short_listen=17450, chirps=32, range_mode=0,
                             st_flags=0, st_detail=0, st_busy=0,
                             agc_gain=0, agc_peak=0, agc_sat=0, agc_enable=0):
-        """Build a 26-byte status response matching FPGA format (Build 26)."""
+        """Build a 26-byte status response matching FPGA format."""
         pkt = bytearray()
         pkt.append(STATUS_HEADER_BYTE)
 
-        # Word 0: {0xFF[31:24], mode[23:22], stream[21:19], 3'b000[18:16], threshold[15:0]}
-        w0 = (0xFF << 24) | ((mode & 0x03) << 22) | ((stream & 0x07) << 19) | (threshold & 0xFFFF)
+        # Word 0: {0xFF[31:24], mode[23:22], stream[21:16], threshold[15:0]}
+        w0 = (0xFF << 24) | ((mode & 0x03) << 22) | ((stream & 0x3F) << 16) | (threshold & 0xFFFF)
         pkt += struct.pack(">I", w0)
 
         # Word 1: {long_chirp, long_listen}
@@ -407,11 +407,11 @@ class TestRadarFrameDefaults(unittest.TestCase):
 
     def test_default_shapes(self):
         f = RadarFrame()
-        self.assertEqual(f.range_doppler_i.shape, (64, 32))
-        self.assertEqual(f.range_doppler_q.shape, (64, 32))
-        self.assertEqual(f.magnitude.shape, (64, 32))
-        self.assertEqual(f.detections.shape, (64, 32))
-        self.assertEqual(f.range_profile.shape, (64,))
+        self.assertEqual(f.range_doppler_i.shape, (512, 32))
+        self.assertEqual(f.range_doppler_q.shape, (512, 32))
+        self.assertEqual(f.magnitude.shape, (512, 32))
+        self.assertEqual(f.detections.shape, (512, 32))
+        self.assertEqual(f.range_profile.shape, (512,))
         self.assertEqual(f.detection_count, 0)
 
     def test_default_zeros(self):

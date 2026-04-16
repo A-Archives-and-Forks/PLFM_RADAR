@@ -22,7 +22,7 @@ Usage:
 import os
 import numpy as np
 
-N = 1024  # FFT length
+N = 2048  # FFT length
 
 
 def to_q15(value):

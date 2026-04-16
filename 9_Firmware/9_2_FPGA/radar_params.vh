@@ -10,27 +10,36 @@
 // optionally alias macros to localparams for readability.
 //
 // BOARD VARIANTS:
-//   SUPPORT_LONG_RANGE = 0  (50T, USB_MODE=1)  — 3 km mode only, 64 range bins
-//   SUPPORT_LONG_RANGE = 1  (200T, USB_MODE=0) — 3 km + 20 km modes, up to 1024 bins
+//   SUPPORT_LONG_RANGE = 0  (50T, USB_MODE=1)  — 3 km mode only
+//   SUPPORT_LONG_RANGE = 1  (200T, USB_MODE=0) — 3 km + 20 km modes
+//
+// RADAR MODES (runtime, via host_radar_mode register, opcode 0x01):
+//   2'b00 = STM32 pass-through (production — STM32 controls chirp timing)
+//   2'b01 = Auto-scan 3 km     (FPGA-timed, short chirps only)
+//   2'b10 = Single-chirp debug (one long chirp per trigger)
+//   2'b11 = Reserved / idle
 //
 // RANGE MODES (runtime, via host_range_mode register, opcode 0x20):
-//   2'b00 = 3 km  (default on both boards)
-//   2'b01 = 20 km (200T only; clamped to 3 km on 50T)
+//   2'b00 = 3 km   (default — pass-through treats all chirps as short)
+//   2'b01 = Long-range (pass-through: first half long, second half short)
 //   2'b10 = Reserved
 //   2'b11 = Reserved
 //
 // USAGE:
 //   `include "radar_params.vh"
-//   Then reference `RP_FFT_SIZE, `RP_MAX_OUTPUT_BINS, etc.
+//   Then reference `RP_FFT_SIZE, `RP_NUM_RANGE_BINS, etc.
 //
 // PHYSICAL CONSTANTS (derived from hardware):
 //   ADC clock:           400 MSPS
 //   CIC decimation:      4x
 //   Processing rate:     100 MSPS (post-DDC)
 //   Range per sample:    c / (2 * 100e6) = 1.5 m
-//   Decimation factor:   16 (1024 FFT bins -> 64 output bins per segment)
-//   Range per dec. bin:  1.5 m * 16 = 24.0 m
+//   FFT size:            2048
+//   Decimation factor:   4  (2048 FFT bins -> 512 output range bins)
+//   Range per dec. bin:  1.5 m * 4 = 6.0 m
+//   Max range (3 km):    512 * 6.0 = 3072 m
 //   Carrier frequency:   10.5 GHz
+//   IF frequency:        120 MHz
 //
 // CHIRP BANDWIDTH (Phase 1 target — currently 20 MHz, planned 30 MHz):
 //   Range resolution:    c / (2 * BW)
@@ -59,11 +68,13 @@
 // FFT AND PROCESSING CONSTANTS (fixed, both modes)
 // ============================================================================
 
-`define RP_FFT_SIZE             1024    // Range FFT points per segment
+`define RP_FFT_SIZE             2048    // Range FFT points per segment
+`define RP_LOG2_FFT_SIZE        11      // log2(2048)
 `define RP_OVERLAP_SAMPLES      128     // Overlap between adjacent segments
-`define RP_SEGMENT_ADVANCE      896     // FFT_SIZE - OVERLAP = 1024 - 128
-`define RP_DECIMATION_FACTOR    16      // Range bin decimation (1024 -> 64)
-`define RP_BINS_PER_SEGMENT     64      // FFT_SIZE / DECIMATION_FACTOR
+`define RP_SEGMENT_ADVANCE      1920    // FFT_SIZE - OVERLAP = 2048 - 128
+`define RP_DECIMATION_FACTOR    4       // Range bin decimation (2048 -> 512)
+`define RP_NUM_RANGE_BINS       512     // FFT_SIZE / DECIMATION_FACTOR
+`define RP_RANGE_BIN_BITS       9       // ceil(log2(512))
 `define RP_DOPPLER_FFT_SIZE     16      // Per sub-frame Doppler FFT
 `define RP_CHIRPS_PER_FRAME     32      // Total chirps (16 long + 16 short)
 `define RP_CHIRPS_PER_SUBFRAME  16      // Chirps per Doppler sub-frame
@@ -75,36 +86,35 @@
 // ============================================================================
 
 `define RP_LONG_CHIRP_SAMPLES_3KM   3000    // 30 us at 100 MSPS
-`define RP_LONG_SEGMENTS_3KM        4       // ceil((3000-1024)/896) + 1 = 4
-`define RP_OUTPUT_RANGE_BINS_3KM    64      // Downstream pipeline expects 64 range bins (NOTE: will become 128 after 2048-pt FFT upgrade)
+`define RP_LONG_SEGMENTS_3KM        2       // ceil((3000-2048)/1920) + 1 = 2
 `define RP_SHORT_CHIRP_SAMPLES      50      // 0.5 us at 100 MSPS (same both modes)
 `define RP_SHORT_SEGMENTS           1       // Single segment for short chirp
 
 // Derived 3 km limits
-`define RP_MAX_RANGE_3KM            1536    // 64 bins * 24 m = 1536 m
+`define RP_MAX_RANGE_3KM            3072    // 512 bins * 6 m = 3072 m
 
 // ============================================================================
-// 20 KM MODE PARAMETERS (200T only)
+// 20 KM MODE PARAMETERS (200T only — Phase 2)
 // ============================================================================
 
 `define RP_LONG_CHIRP_SAMPLES_20KM  13700   // 137 us at 100 MSPS (= listen window)
-`define RP_LONG_SEGMENTS_20KM       16      // ceil((13700-1024)/896) + 1 = 16
-`define RP_OUTPUT_RANGE_BINS_20KM   1024    // 16 segments * 64 dec. bins each
+`define RP_LONG_SEGMENTS_20KM       8       // 1 + ceil((13700-2048)/1920) = 1 + 7 = 8
+`define RP_OUTPUT_RANGE_BINS_20KM   4096    // 8 segments * 512 dec. bins each
 
 // Derived 20 km limits
-`define RP_MAX_RANGE_20KM           24576   // 1024 bins * 24 m = 24576 m
+`define RP_MAX_RANGE_20KM           24576   // 4096 bins * 6 m = 24576 m
 
 // ============================================================================
 // MAX VALUES (for sizing buffers — compile-time, based on board variant)
 // ============================================================================
 
 `ifdef SUPPORT_LONG_RANGE
-  `define RP_MAX_SEGMENTS           16
-  `define RP_MAX_OUTPUT_BINS        1024
+  `define RP_MAX_SEGMENTS           8
+  `define RP_MAX_OUTPUT_BINS        4096
   `define RP_MAX_CHIRP_SAMPLES      13700
 `else
-  `define RP_MAX_SEGMENTS           4
-  `define RP_MAX_OUTPUT_BINS        64
+  `define RP_MAX_SEGMENTS           2
+  `define RP_MAX_OUTPUT_BINS        512
   `define RP_MAX_CHIRP_SAMPLES      3000
 `endif
 
@@ -113,25 +123,22 @@
 // ============================================================================
 
 // Segment index: ceil(log2(MAX_SEGMENTS))
-//   50T:  log2(4)  = 2 bits
-//   200T: log2(16) = 4 bits
+//   50T:  log2(2) = 1 bit  (use 2 for safety)
+//   200T: log2(8) = 3 bits
 `ifdef SUPPORT_LONG_RANGE
-  `define RP_SEGMENT_IDX_WIDTH      4
-  `define RP_RANGE_BIN_WIDTH        10
-  `define RP_CHIRP_MEM_ADDR_W       14      // log2(16*1024) = 14
-  `define RP_DOPPLER_MEM_ADDR_W     15      // log2(1024*32) = 15
-  `define RP_CFAR_MAG_ADDR_W        15      // log2(1024*32) = 15
+  `define RP_SEGMENT_IDX_WIDTH      3
+  `define RP_RANGE_BIN_WIDTH_MAX    12      // ceil(log2(4096))
+  `define RP_DOPPLER_MEM_ADDR_W     17      // ceil(log2(4096*32)) = 17
+  `define RP_CFAR_MAG_ADDR_W        17      // ceil(log2(4096*32)) = 17
 `else
   `define RP_SEGMENT_IDX_WIDTH      2
-  `define RP_RANGE_BIN_WIDTH        6
-  `define RP_CHIRP_MEM_ADDR_W       12      // log2(4*1024) = 12
-  `define RP_DOPPLER_MEM_ADDR_W     11      // log2(64*32) = 11
-  `define RP_CFAR_MAG_ADDR_W        11      // log2(64*32) = 11
+  `define RP_RANGE_BIN_WIDTH_MAX    9       // ceil(log2(512))
+  `define RP_DOPPLER_MEM_ADDR_W     14      // ceil(log2(512*32)) = 14
+  `define RP_CFAR_MAG_ADDR_W        14      // ceil(log2(512*32)) = 14
 `endif
 
 // Derived depths (for memory declarations)
-// Usage: reg [15:0] mem [0:`RP_CHIRP_MEM_DEPTH-1];
-`define RP_CHIRP_MEM_DEPTH      (`RP_MAX_SEGMENTS * `RP_FFT_SIZE)
+// Usage: reg [15:0] mem [0:`RP_DOPPLER_MEM_DEPTH-1];
 `define RP_DOPPLER_MEM_DEPTH    (`RP_MAX_OUTPUT_BINS * `RP_CHIRPS_PER_FRAME)
 `define RP_CFAR_MAG_DEPTH       (`RP_MAX_OUTPUT_BINS * `RP_NUM_DOPPLER_BINS)
 
@@ -161,11 +168,11 @@
 // PHYSICAL CONSTANTS (integer-scaled for Verilog — use in comments/assertions)
 // ============================================================================
 // Range per ADC sample:     1.5 m  (stored as 15 in units of 0.1 m)
-// Range per decimated bin: 24.0 m  (stored as 240 in units of 0.1 m)
+// Range per decimated bin:  6.0 m  (stored as 60 in units of 0.1 m)
 // Processing rate:         100 MSPS
 
 `define RP_RANGE_PER_SAMPLE_DM      15      // 1.5 m in decimeters
-`define RP_RANGE_PER_BIN_DM         240     // 24.0 m in decimeters
+`define RP_RANGE_PER_BIN_DM         60      // 6.0 m in decimeters
 `define RP_PROCESSING_RATE_MHZ      100
 
 // ============================================================================
@@ -190,11 +197,32 @@
 `define RP_DEF_DETECT_THRESHOLD     10000
 
 // ============================================================================
-// RANGE MODE ENCODING
+// RADAR MODE ENCODING (host_radar_mode, opcode 0x01)
+// ============================================================================
+`define RP_MODE_STM32_PASSTHROUGH   2'b00
+`define RP_MODE_AUTO_3KM            2'b01
+`define RP_MODE_SINGLE_DEBUG        2'b10
+`define RP_MODE_RESERVED            2'b11
+
+// ============================================================================
+// RANGE MODE ENCODING (host_range_mode, opcode 0x20)
 // ============================================================================
 `define RP_RANGE_MODE_3KM           2'b00
-`define RP_RANGE_MODE_20KM          2'b01
+`define RP_RANGE_MODE_LONG          2'b01
 `define RP_RANGE_MODE_RSVD2         2'b10
 `define RP_RANGE_MODE_RSVD3         2'b11
+
+// ============================================================================
+// STREAM CONTROL (host_stream_control, opcode 0x04, 6-bit)
+// ============================================================================
+// Bits [2:0]: Stream enable mask
+//   Bit 0 = range profile stream
+//   Bit 1 = doppler map stream
+//   Bit 2 = cfar/detection stream
+// Bits [5:3]: Stream format control
+//   Bit 3 = mag_only    (0=I/Q pairs, 1=Manhattan magnitude only)
+//   Bit 4 = sparse_det  (0=dense detection flags, 1=sparse detection list)
+//   Bit 5 = reserved (was frame_decimate, not needed with mag-only fitting)
+`define RP_STREAM_CTRL_DEFAULT      6'b001_111  // all streams, mag-only mode
 
 `endif // RADAR_PARAMS_VH

@@ -69,7 +69,7 @@ FIR_COEFFS_HEX = [
 # DDC output interface
 DDC_OUT_BITS = 16                # 18 → 16 bit with rounding + saturation
 
-FFT_SIZE = 1024
+FFT_SIZE = 2048
 FFT_DATA_W = 16
 FFT_INTERNAL_W = 32
 FFT_TWIDDLE_W = 16
@@ -77,7 +77,7 @@ FFT_TWIDDLE_W = 16
 # Doppler — dual 16-pt FFT architecture
 DOPPLER_FFT_SIZE = 16            # per sub-frame
 DOPPLER_TOTAL_BINS = 32          # total output (2 sub-frames x 16)
-DOPPLER_RANGE_BINS = 64
+DOPPLER_RANGE_BINS = 512
 DOPPLER_CHIRPS = 32
 CHIRPS_PER_SUBFRAME = 16
 DOPPLER_WINDOW_TYPE = 0          # Hamming
@@ -109,8 +109,8 @@ AERIS_RX_LO_HZ = 10.38e9        # RX LO (ADF4382)
 AERIS_CHIRP_BW = 20e6           # Chirp bandwidth (target: 30 MHz Phase 1)
 AERIS_LONG_CHIRP_S = 30e-6      # Long chirp duration
 AERIS_PRI_S = 167e-6            # Pulse repetition interval
-AERIS_DECIMATION = 16           # Range bin decimation (1024 → 64)
-AERIS_RANGE_PER_BIN = 24.0      # Meters per decimated bin
+AERIS_DECIMATION = 4            # Range bin decimation (2048 → 512)
+AERIS_RANGE_PER_BIN = 6.0       # Meters per decimated bin
 
 
 # ===========================================================================
@@ -152,7 +152,7 @@ def load_and_quantize_adi_data(data_path, config_path, frame_idx=0):
     with a 120 MHz IF. We need to:
     1. Take one frame of 256 chirps x 1079 samples
     2. Use only 32 chirps (matching AERIS-10 CHIRPS_PER_FRAME)
-    3. Truncate to 1024 samples (matching FFT_SIZE)
+    3. Zero-pad to 2048 samples (matching FFT_SIZE)
     4. Upconvert to 120 MHz IF (add I*cos - Q*sin) to create real signal
     5. Quantize to 8-bit unsigned (matching AD9484)
     """
@@ -163,8 +163,10 @@ def load_and_quantize_adi_data(data_path, config_path, frame_idx=0):
     # Extract one frame
     frame = data[frame_idx]  # (256, 1079) complex
     
-    # Use first 32 chirps, first 1024 samples
-    iq_block = frame[:DOPPLER_CHIRPS, :FFT_SIZE]  # (32, 1024) complex
+    # Use first 32 chirps, zero-pad to FFT_SIZE samples
+    n_available = min(frame.shape[1], FFT_SIZE)
+    iq_block = np.zeros((DOPPLER_CHIRPS, FFT_SIZE), dtype=np.complex128)
+    iq_block[:, :n_available] = frame[:DOPPLER_CHIRPS, :n_available]
     
     # The ADI data is baseband complex IQ at 4 MSPS.
     # AERIS-10 sees a real signal at 400 MSPS with 120 MHz IF.
@@ -202,7 +204,10 @@ def load_and_quantize_adi_data(data_path, config_path, frame_idx=0):
     
     # Also create 8-bit ADC stimulus for DDC validation
     # Use just one chirp of real-valued data (I channel only, shifted to unsigned)
-    chirp0_real = np.real(frame[0, :FFT_SIZE])
+    # Zero-pad if needed (ADI has 1079 samples, FFT_SIZE may be larger)
+    chirp0_real = np.zeros(FFT_SIZE)
+    n_avail = min(frame.shape[1], FFT_SIZE)
+    chirp0_real[:n_avail] = np.real(frame[0, :n_avail])
     chirp0_norm = chirp0_real / np.max(np.abs(chirp0_real))
     adc_8bit = np.round(chirp0_norm * 127 + 128).astype(np.uint8)
     adc_8bit = np.clip(adc_8bit, 0, 255)
@@ -451,21 +456,21 @@ def fft_twiddle_lookup(k, N, cos_rom):
 
 def run_range_fft(iq_i, iq_q, twiddle_file=None):
     """
-    Bit-accurate 1024-point radix-2 DIT FFT matching fft_engine.v.
+    Bit-accurate radix-2 DIT FFT matching fft_engine.v.
     
-    Input: 16-bit signed I/Q arrays (1024 samples)
-    Output: 16-bit signed I/Q arrays (1024 bins, saturated from 32-bit internal)
+    Input: 16-bit signed I/Q arrays (N samples, N must be power of 2)
+    Output: 16-bit signed I/Q arrays (N bins, saturated from 32-bit internal)
     
     Matches RTL:
     - Bit-reversed input loading → sign-extended to 32-bit internal
-    - 10 stages of radix-2 butterflies
+    - LOG2(N) stages of radix-2 butterflies
     - Twiddle multiply: 32-bit * 16-bit = 48-bit, shift >>> 15
     - Add/subtract in 32-bit
     - Output: saturate 32-bit → 16-bit
     """
-    N = FFT_SIZE
+    N = len(iq_i)
     LOG2N = int(np.log2(N))
-    assert N == 1024 and LOG2N == 10
+    assert N == (1 << LOG2N), f"FFT size {N} is not a power of 2"
     
     # Load twiddle ROM
     if twiddle_file and os.path.exists(twiddle_file):
@@ -542,18 +547,18 @@ def run_range_fft(iq_i, iq_q, twiddle_file=None):
 # ===========================================================================
 def run_range_bin_decimator(range_fft_i, range_fft_q,
                             mode=1, start_bin=0,
-                            input_bins=1024, output_bins=64,
-                            decimation_factor=16):
+                            input_bins=2048, output_bins=512,
+                            decimation_factor=4):
     """
     Bit-accurate model of range_bin_decimator.v (peak detection mode).
 
-    Input:  range_fft_i/q — shape (N_chirps, 1024), 16-bit signed
-    Output: decimated_i/q — shape (N_chirps, 64), 16-bit signed
+    Input:  range_fft_i/q — shape (N_chirps, input_bins), 16-bit signed
+    Output: decimated_i/q — shape (N_chirps, output_bins), 16-bit signed
 
     Modes:
         0 = simple decimation (take center sample of each group)
-        1 = peak detection   (select max |I|+|Q| from each group of 16)
-        2 = averaging        (sum group >> 4)
+        1 = peak detection   (select max |I|+|Q| from each group)
+        2 = averaging        (sum group >> log2(decimation_factor))
 
     RTL detail: abs_i = I[15] ? (~I + 1) : I   (unsigned 16-bit)
                 cur_mag = {1'b0, abs_i} + {1'b0, abs_q}   (17-bit)
@@ -621,9 +626,10 @@ def run_range_bin_decimator(range_fft_i, range_fft_q,
                     sum_i += int(range_fft_i[c, in_idx])
                     sum_q += int(range_fft_q[c, in_idx])
                     in_idx += 1
-                # RTL: sum_i[19:4], truncation (not rounding)
-                decimated_i[c, obin] = int(sum_i) >> 4
-                decimated_q[c, obin] = int(sum_q) >> 4
+                # RTL: sum_i >> log2(decimation_factor), truncation (not rounding)
+                avg_shift = int(np.log2(decimation_factor))
+                decimated_i[c, obin] = int(sum_i) >> avg_shift
+                decimated_q[c, obin] = int(sum_q) >> avg_shift
 
 
     return decimated_i, decimated_q
@@ -636,7 +642,7 @@ def run_doppler_fft(range_data_i, range_data_q, twiddle_file_16=None):
     """
     Bit-accurate Doppler processor matching doppler_processor.v (dual 16-pt FFT).
 
-    Input: range_data_i/q shape (DOPPLER_CHIRPS, FFT_SIZE) — 16-bit signed
+    Input: range_data_i/q shape (DOPPLER_CHIRPS, N_range_bins) — 16-bit signed
            Only first DOPPLER_RANGE_BINS columns are processed.
     Output: doppler_map_i/q shape (DOPPLER_RANGE_BINS, DOPPLER_TOTAL_BINS) — 16-bit signed
 
@@ -1129,7 +1135,7 @@ def main():
         "amp_radar",
         "phaser_amp_4MSPS_500M_300u_256_m3dB_config.npy"
     )
-    twiddle_1024 = os.path.join(fpga_dir, "fft_twiddle_1024.mem")
+    twiddle_range = os.path.join(fpga_dir, "fft_twiddle_2048.mem")
     output_dir = os.path.join(script_dir, "hex")
     
     
@@ -1140,7 +1146,7 @@ def main():
         amp_data, amp_config, frame_idx=args.frame
     )
     
-    # iq_i, iq_q: (32, 1024) int64, 16-bit range — post-DDC equivalent
+    # iq_i, iq_q: (32, 2048) int64, 16-bit range — post-DDC equivalent (zero-padded)
     
     # -----------------------------------------------------------------------
     # Write stimulus files
@@ -1158,7 +1164,7 @@ def main():
     # -----------------------------------------------------------------------
     # Run range FFT on first chirp (bit-accurate)
     # -----------------------------------------------------------------------
-    range_fft_i, range_fft_q = run_range_fft(iq_i[0], iq_q[0], twiddle_1024)
+    range_fft_i, range_fft_q = run_range_fft(iq_i[0], iq_q[0], twiddle_range)
     write_hex_files(output_dir, range_fft_i, range_fft_q, "range_fft_chirp0")
     
     # Run range FFT on all 32 chirps
@@ -1166,7 +1172,7 @@ def main():
     all_range_q = np.zeros((DOPPLER_CHIRPS, FFT_SIZE), dtype=np.int64)
     
     for c in range(DOPPLER_CHIRPS):
-        ri, rq = run_range_fft(iq_i[c], iq_q[c], twiddle_1024)
+        ri, rq = run_range_fft(iq_i[c], iq_q[c], twiddle_range)
         all_range_i[c] = ri
         all_range_q[c] = rq
         if (c + 1) % 8 == 0:
@@ -1192,7 +1198,7 @@ def main():
         decimation_factor=FFT_SIZE // DOPPLER_RANGE_BINS
     )
     
-    # Write full-chain range FFT input: all 32 chirps x 1024 bins = 32768 samples
+    # Write full-chain range FFT input: all 32 chirps x 2048 bins = 65536 samples
     # This is the stimulus for the range_bin_decimator in the full-chain testbench.
     # Format: packed {Q[31:16], I[15:0]} per RTL range_data bus format
     fc_input_file = os.path.join(output_dir, "fullchain_range_input.hex")
@@ -1248,7 +1254,7 @@ def main():
     np.save(os.path.join(output_dir, "fullchain_mti_doppler_q.npy"), mti_doppler_q)
     
     # DC notch on MTI-Doppler data
-    DC_NOTCH_WIDTH = 2  # Default test value: zero bins {0, 1, 31}
+    DC_NOTCH_WIDTH = 2  # Default test value: zero bins {0, 1, 15, 16, 17, 31}
     notched_i, notched_q = run_dc_notch(mti_doppler_i, mti_doppler_q, width=DC_NOTCH_WIDTH)
     write_hex_files(output_dir, notched_i, notched_q, "fullchain_notched_ref")
     
@@ -1274,7 +1280,7 @@ def main():
     )
     
     # Write CFAR reference files
-    # 1. Magnitude map (17-bit unsigned, row-major: 64 range x 32 Doppler = 2048)
+    # 1. Magnitude map (17-bit unsigned, row-major: 512 range x 32 Doppler = 16384)
     cfar_mag_file = os.path.join(output_dir, "fullchain_cfar_mag.hex")
     with open(cfar_mag_file, 'w') as f:
         for rbin in range(DOPPLER_RANGE_BINS):

@@ -53,8 +53,8 @@ N_SAMPLES_LISTEN = int(T_LISTEN_LONG * FS_ADC)  # 54800 samples
 
 # Processing chain
 CIC_DECIMATION = 4
-FFT_SIZE = 1024
-RANGE_BINS = 64
+FFT_SIZE = 2048
+RANGE_BINS = 512
 DOPPLER_FFT_SIZE = 16      # Per sub-frame
 DOPPLER_TOTAL_BINS = 32    # Total output bins (2 sub-frames x 16)
 CHIRPS_PER_SUBFRAME = 16
