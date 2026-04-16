@@ -566,6 +566,7 @@ wire cic_valid_i, cic_valid_q;
 cic_decimator_4x_enhanced cic_i_inst (
     .clk(clk_400m),
     .reset_n(reset_n_400m),
+    .reset_h(reset_400m),
     .data_in(mixed_i[33:16]),
     .data_valid(mixed_valid),
     .data_out(cic_i_out),
@@ -575,6 +576,7 @@ cic_decimator_4x_enhanced cic_i_inst (
 cic_decimator_4x_enhanced cic_q_inst (
     .clk(clk_400m),
     .reset_n(reset_n_400m),
+    .reset_h(reset_400m),
     .data_in(mixed_q[33:16]),
     .data_valid(mixed_valid),
     .data_out(cic_q_out),

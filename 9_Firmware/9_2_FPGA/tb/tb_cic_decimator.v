@@ -36,6 +36,7 @@ module tb_cic_decimator;
     cic_decimator_4x_enhanced uut (
         .clk               (clk),
         .reset_n            (reset_n),
+        .reset_h            (~reset_n),
         .data_in            (data_in),
         .data_valid         (data_valid),
         .data_out           (data_out),

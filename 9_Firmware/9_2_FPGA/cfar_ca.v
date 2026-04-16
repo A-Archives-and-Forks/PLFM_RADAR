@@ -208,20 +208,31 @@ wire lead_rem_valid = (lead_rem_idx >= 0) && (lead_rem_idx < NUM_RANGE_BINS);
 wire lag_rem_valid  = (lag_rem_idx  >= 0) && (lag_rem_idx  < NUM_RANGE_BINS);
 wire lag_add_valid  = (lag_add_idx  >= 0) && (lag_add_idx  < NUM_RANGE_BINS);
 
-// Safe col_buf read with bounds checking (combinational)
+// Safe col_buf read with bounds checking (combinational — feeds pipeline regs)
 wire [MAG_WIDTH-1:0] lead_add_val = lead_add_valid ? col_buf[lead_add_idx[ROW_BITS-1:0]] : {MAG_WIDTH{1'b0}};
 wire [MAG_WIDTH-1:0] lead_rem_val = lead_rem_valid ? col_buf[lead_rem_idx[ROW_BITS-1:0]] : {MAG_WIDTH{1'b0}};
 wire [MAG_WIDTH-1:0] lag_rem_val  = lag_rem_valid  ? col_buf[lag_rem_idx[ROW_BITS-1:0]]  : {MAG_WIDTH{1'b0}};
 wire [MAG_WIDTH-1:0] lag_add_val  = lag_add_valid  ? col_buf[lag_add_idx[ROW_BITS-1:0]]  : {MAG_WIDTH{1'b0}};
 
-// Net deltas
-wire signed [SUM_WIDTH:0] lead_delta = (lead_add_valid ? $signed({1'b0, lead_add_val}) : 0)
-                                      - (lead_rem_valid ? $signed({1'b0, lead_rem_val}) : 0);
-wire signed [1:0] lead_cnt_delta = (lead_add_valid ? 1 : 0) - (lead_rem_valid ? 1 : 0);
+// ============================================================================
+// PIPELINE REGISTERS: Break col_buf mux tree out of ST_CFAR_CMP critical path
+// ============================================================================
+// Captured in ST_CFAR_THR (col_buf indices depend only on cut_idx/r_guard/r_train,
+// all stable during THR). Used in ST_CFAR_CMP for delta/sum computation.
+// This removes ~6-8 logic levels (9-level mux tree) from the CMP critical path.
+reg [MAG_WIDTH-1:0] lead_add_val_r, lead_rem_val_r;
+reg [MAG_WIDTH-1:0] lag_rem_val_r,  lag_add_val_r;
+reg                 lead_add_valid_r, lead_rem_valid_r;
+reg                 lag_rem_valid_r,  lag_add_valid_r;
 
-wire signed [SUM_WIDTH:0] lag_delta = (lag_add_valid ? $signed({1'b0, lag_add_val}) : 0)
-                                     - (lag_rem_valid ? $signed({1'b0, lag_rem_val}) : 0);
-wire signed [1:0] lag_cnt_delta = (lag_add_valid ? 1 : 0) - (lag_rem_valid ? 1 : 0);
+// Net deltas (computed from registered col_buf values — combinational in CMP)
+wire signed [SUM_WIDTH:0] lead_delta = (lead_add_valid_r ? $signed({1'b0, lead_add_val_r}) : 0)
+                                      - (lead_rem_valid_r ? $signed({1'b0, lead_rem_val_r}) : 0);
+wire signed [1:0] lead_cnt_delta = (lead_add_valid_r ? 1 : 0) - (lead_rem_valid_r ? 1 : 0);
+
+wire signed [SUM_WIDTH:0] lag_delta = (lag_add_valid_r ? $signed({1'b0, lag_add_val_r}) : 0)
+                                     - (lag_rem_valid_r ? $signed({1'b0, lag_rem_val_r}) : 0);
+wire signed [1:0] lag_cnt_delta = (lag_add_valid_r ? 1 : 0) - (lag_rem_valid_r ? 1 : 0);
 
 // ============================================================================
 // NOISE ESTIMATE COMPUTATION (combinational for CFAR mode selection)
@@ -290,6 +301,14 @@ always @(posedge clk or negedge reset_n) begin
         noise_sum_reg  <= 0;
         noise_product  <= 0;
         adaptive_thr   <= 0;
+        lead_add_val_r <= 0;
+        lead_rem_val_r <= 0;
+        lag_rem_val_r  <= 0;
+        lag_add_val_r  <= 0;
+        lead_add_valid_r <= 0;
+        lead_rem_valid_r <= 0;
+        lag_rem_valid_r  <= 0;
+        lag_add_valid_r  <= 0;
         r_guard        <= 4'd2;
         r_train        <= 5'd8;
         r_alpha        <= 8'h30;
@@ -443,6 +462,19 @@ always @(posedge clk or negedge reset_n) begin
             cfar_status <= {4'd4, 1'b0, col_idx[2:0]};
 
             noise_sum_reg <= noise_sum_comb;
+
+            // Pipeline: register col_buf reads for next CUT's window update.
+            // Indices depend only on cut_idx/r_guard/r_train (all stable here).
+            // Breaks the 9-level col_buf mux tree out of ST_CFAR_CMP.
+            lead_add_val_r   <= lead_add_val;
+            lead_rem_val_r   <= lead_rem_val;
+            lag_rem_val_r    <= lag_rem_val;
+            lag_add_val_r    <= lag_add_val;
+            lead_add_valid_r <= lead_add_valid;
+            lead_rem_valid_r <= lead_rem_valid;
+            lag_rem_valid_r  <= lag_rem_valid;
+            lag_add_valid_r  <= lag_add_valid;
+
             state <= ST_CFAR_MUL;
         end
 

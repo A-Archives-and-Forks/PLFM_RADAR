@@ -1,6 +1,7 @@
 module cic_decimator_4x_enhanced (
     input wire clk,                 // 400MHz input clock
     input wire reset_n,
+    input wire reset_h,             // Pre-registered active-high reset from parent (avoids LUT1 inverter)
     input wire signed [17:0] data_in,  // 18-bit input
     input wire data_valid,
     output reg signed [17:0] data_out, // 18-bit output
@@ -32,11 +33,15 @@ localparam COMB_WIDTH = 28;
 // adjacent DSP48E1 tiles — zero fabric delay, guaranteed to meet 400+ MHz
 // on 7-series regardless of speed grade.
 //
-// Active-high reset derived from reset_n (inverted).
+// Active-high reset provided by parent module (pre-registered).
 // CEP (clock enable for P register) gated by data_valid.
 // ============================================================================
 
-wire reset_h = ~reset_n;  // active-high reset for DSP48E1 RSTP
+// reset_h is now an input port from parent module (pre-registered active-high).
+// Previously: wire reset_h = ~reset_n; — this LUT1 inverter + long routing to
+// 8 DSP48E1 RSTB pins was the root cause of 400 MHz timing failure (WNS=-0.074ns).
+// The parent ddc_400m.v already has a registered reset_400m derived from
+// the 2-stage sync reset, so we use that directly.
 
 // Sign-extended input for integrator_0 C port (48-bit)
 wire [ACC_WIDTH-1:0] data_in_c = {{(ACC_WIDTH-18){data_in[17]}}, data_in};
@@ -702,7 +707,7 @@ end
 // Sync reset: enables FDRE inference for better timing at 400 MHz.
 // Reset is already synchronous to clk via reset synchronizer in parent module.
 always @(posedge clk) begin
-    if (!reset_n) begin
+    if (reset_h) begin
         integrator_sampled <= 0;
         decimation_counter <= 0;
         data_valid_delayed <= 0;
@@ -757,7 +762,7 @@ end
 // Pipeline the valid signal for comb section
 // Sync reset: matches decimation control block reset style.
 always @(posedge clk) begin
-    if (!reset_n) begin
+    if (reset_h) begin
         data_valid_comb <= 0;
         data_valid_comb_pipe <= 0;
         data_valid_comb_0_out <= 0;
@@ -792,7 +797,7 @@ end
 //   - Each stage: comb[i] = comb[i-1] - comb_delay[i][last]
 
 always @(posedge clk) begin
-    if (!reset_n) begin
+    if (reset_h) begin
         for (i = 0; i < STAGES; i = i + 1) begin
             comb[i] <= 0;
             for (j = 0; j < COMB_DELAY; j = j + 1) begin
