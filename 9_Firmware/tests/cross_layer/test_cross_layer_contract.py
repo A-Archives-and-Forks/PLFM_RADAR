@@ -486,6 +486,71 @@ class TestTier1AgcCrossLayerInvariant:
             "so status word and DIG_6 derive from the same signal"
         )
 
+    def test_mcu_dig6_debounce_guards_enable_assignment(self):
+        """
+        MCU must apply a 2-frame confirmation debounce before mutating
+        outerAgc.enabled from DIG_6 reads. A naive assignment straight from
+        the latest GPIO sample would let a single-cycle glitch flip the AGC
+        state for one frame.
+        """
+        main_cpp = (cp.MCU_CODE_DIR / "main.cpp").read_text()
+
+        # (1) Current-frame DIG_6 sample must be captured in a local variable
+        # so it can be compared against the previous-frame value.
+        now_match = re.search(
+            r'(bool|int|uint8_t)\s+(\w*dig6\w*)\s*=\s*[^;]*?'
+            r'HAL_GPIO_ReadPin\s*\(\s*FPGA_DIG6[^;]*;',
+            main_cpp,
+            re.DOTALL,
+        )
+        assert now_match, (
+            "DIG_6 read must be stored in a local variable (e.g. `dig6_now`) "
+            "so the current sample can be compared against the previous frame"
+        )
+        now_var = now_match.group(2)
+
+        # (2) Previous-frame state must persist across iterations via static
+        # storage, and must default to false (matches FPGA boot: AGC off).
+        prev_match = re.search(
+            r'static\s+(bool|int|uint8_t)\s+(\w*dig6\w*)\s*=\s*(false|0)\s*;',
+            main_cpp,
+        )
+        assert prev_match, (
+            "A static previous-frame variable (e.g. "
+            "`static bool dig6_prev = false;`) must exist, initialized to "
+            "false so the debounce starts in sync with the FPGA boot default"
+        )
+        prev_var = prev_match.group(2)
+        assert prev_var != now_var, (
+            f"Current and previous DIG_6 variables must be distinct "
+            f"(both are '{now_var}')"
+        )
+
+        # (3) outerAgc.enabled assignment must be gated by now == prev.
+        guarded_assign = re.search(
+            rf'if\s*\(\s*{now_var}\s*==\s*{prev_var}\s*\)\s*\{{[^}}]*?'
+            rf'outerAgc\.enabled\s*=\s*{now_var}\s*;',
+            main_cpp,
+            re.DOTALL,
+        )
+        assert guarded_assign, (
+            f"`outerAgc.enabled = {now_var};` must be inside "
+            f"`if ({now_var} == {prev_var}) {{ ... }}` — the confirmation "
+            "guard that absorbs single-sample GPIO glitches. A naive "
+            "assignment without this guard reintroduces the glitch bug."
+        )
+
+        # (4) Previous-frame variable must advance each frame.
+        prev_update = re.search(
+            rf'{prev_var}\s*=\s*{now_var}\s*;',
+            main_cpp,
+        )
+        assert prev_update, (
+            f"`{prev_var} = {now_var};` must run each frame so the "
+            "debounce window slides forward; without it the guard is "
+            "stuck and enable changes never confirm"
+        )
+
 
 class TestTier1DataPacketLayout:
     """Verify data packet byte layout matches between Python and Verilog."""
