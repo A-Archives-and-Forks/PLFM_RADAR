@@ -77,6 +77,7 @@ reg signed [15:0] buf_rdata_i, buf_rdata_q;
 // State machine
 reg [3:0] state;
 localparam ST_IDLE = 0;
+localparam ST_WAIT_LISTEN = 9;   // Wait for TX chirp to end before collecting
 localparam ST_COLLECT_DATA = 1;
 localparam ST_ZERO_PAD = 2;
 localparam ST_WAIT_REF = 3;
@@ -98,11 +99,22 @@ reg signed [15:0] overlap_cache_i [0:OVERLAP_SAMPLES-1];
 reg signed [15:0] overlap_cache_q [0:OVERLAP_SAMPLES-1];
 reg [7:0] overlap_copy_count;
 
+// Listen-window delay counter: skip TX chirp duration before collecting echoes.
+// The chirp_start_pulse fires at the beginning of TX, but the matched filter
+// must collect receive-window samples (echoes), not TX leakage.
+// For long chirp: skip LONG_CHIRP_SAMPLES (3000) ddc_valid counts
+// For short chirp: skip SHORT_CHIRP_SAMPLES (50) ddc_valid counts
+reg [15:0] listen_delay_count;
+reg [15:0] listen_delay_target;
+
 // Microcontroller sync detection
+// mc_new_chirp/elevation/azimuth are TOGGLE signals from radar_mode_controller:
+// they invert on every event. Detect ANY transition (XOR with previous value),
+// not just rising edge, otherwise every other chirp/elevation/azimuth is missed.
 reg mc_new_chirp_prev, mc_new_elevation_prev, mc_new_azimuth_prev;
-wire chirp_start_pulse = mc_new_chirp && !mc_new_chirp_prev;
-wire elevation_change_pulse = mc_new_elevation && !mc_new_elevation_prev;
-wire azimuth_change_pulse = mc_new_azimuth && !mc_new_azimuth_prev;
+wire chirp_start_pulse = mc_new_chirp ^ mc_new_chirp_prev;
+wire elevation_change_pulse = mc_new_elevation ^ mc_new_elevation_prev;
+wire azimuth_change_pulse = mc_new_azimuth ^ mc_new_azimuth_prev;
 
 // Processing chain signals
 wire [15:0] fft_pc_i, fft_pc_q;
@@ -184,6 +196,8 @@ always @(posedge clk or negedge reset_n) begin
         buf_wdata_q <= 0;
         buf_raddr <= 0;
         overlap_copy_count <= 0;
+        listen_delay_count <= 0;
+        listen_delay_target <= 0;
     end else begin
         pc_valid <= 0;
         mem_request <= 0;
@@ -205,19 +219,45 @@ always @(posedge clk or negedge reset_n) begin
                 
                 // Wait for chirp start from microcontroller
                 if (chirp_start_pulse) begin
-                    state <= ST_COLLECT_DATA;
                     total_segments <= use_long_chirp ? LONG_SEGMENTS[2:0] : SHORT_SEGMENTS[2:0];
+
+                    // Delay collection until the listen window opens.
+                    // chirp_start_pulse fires at TX start; echoes only arrive
+                    // after the chirp finishes. Skip the TX duration by
+                    // counting ddc_valid pulses before entering ST_COLLECT_DATA.
+                    listen_delay_count <= 0;
+                    listen_delay_target <= use_long_chirp ? LONG_CHIRP_SAMPLES[15:0]
+                                                         : SHORT_CHIRP_SAMPLES[15:0];
+                    state <= ST_WAIT_LISTEN;
                     
                     `ifdef SIMULATION
-                    $display("[MULTI_SEG_FIXED] Starting %s chirp, segments: %d",
-                             use_long_chirp ? "LONG" : "SHORT", 
-                             use_long_chirp ? LONG_SEGMENTS : SHORT_SEGMENTS);
-                    $display("[MULTI_SEG_FIXED] Overlap: %d samples, Advance: %d samples",
-                             OVERLAP_SAMPLES, SEGMENT_ADVANCE);
+                    $display("[MULTI_SEG_FIXED] Chirp start detected, waiting for listen window (%0d samples)",
+                             use_long_chirp ? LONG_CHIRP_SAMPLES : SHORT_CHIRP_SAMPLES);
                     `endif
                 end
             end
             
+            ST_WAIT_LISTEN: begin
+                // Skip TX chirp duration — count ddc_valid pulses until the
+                // listen window opens. This ensures we only collect echo data,
+                // not TX leakage or dead time.
+                if (ddc_valid) begin
+                    if (listen_delay_count >= listen_delay_target - 1) begin
+                        // Listen window is now open — begin data collection
+                        state <= ST_COLLECT_DATA;
+                        `ifdef SIMULATION
+                        $display("[MULTI_SEG_FIXED] Listen window open after %0d TX samples, starting %s chirp collection",
+                                 listen_delay_count + 1,
+                                 use_long_chirp ? "LONG" : "SHORT");
+                        $display("[MULTI_SEG_FIXED] Overlap: %d samples, Advance: %d samples",
+                                 OVERLAP_SAMPLES, SEGMENT_ADVANCE);
+                        `endif
+                    end else begin
+                        listen_delay_count <= listen_delay_count + 1;
+                    end
+                end
+            end
+
             ST_COLLECT_DATA: begin
                 // Collect samples for current segment with overlap-save
                 if (ddc_valid && buffer_write_ptr < BUFFER_SIZE) begin
@@ -534,9 +574,36 @@ always @(posedge clk or negedge reset_n) begin
 end
 `endif
 
-// ========== OUTPUT CONNECTIONS ==========
+// ========== OUTPUT CONNECTIONS — OVERLAP-SAVE TRIM ==========
+// In overlap-save processing, the first OVERLAP_SAMPLES (128) output bins
+// of each segment after segment 0 are corrupted by circular convolution
+// wrap-around. These must be discarded. Only the SEGMENT_ADVANCE (896)
+// valid bins per segment are forwarded downstream.
+//
+// For segment 0: all 1024 output bins are valid (no prior overlap).
+// For segments 1+: bins [0..127] are artifacts, bins [128..1023] are valid.
+//
+// We count fft_pc_valid pulses per segment and suppress output during
+// the overlap region.
+reg [10:0] output_bin_count;
+wire output_in_overlap = (current_segment != 0) &&
+                         (output_bin_count < OVERLAP_SAMPLES);
+
+always @(posedge clk or negedge reset_n) begin
+    if (!reset_n) begin
+        output_bin_count <= 0;
+    end else begin
+        if (state == ST_PROCESSING && buffer_read_ptr == 0) begin
+            // Reset counter at start of each segment's processing
+            output_bin_count <= 0;
+        end else if (fft_pc_valid) begin
+            output_bin_count <= output_bin_count + 1;
+        end
+    end
+end
+
 assign pc_i_w = fft_pc_i;
 assign pc_q_w = fft_pc_q;
-assign pc_valid_w = fft_pc_valid;
+assign pc_valid_w = fft_pc_valid & ~output_in_overlap;
 
 endmodule

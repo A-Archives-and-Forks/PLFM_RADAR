@@ -527,6 +527,25 @@ run_test "Radar Mode Controller" \
 echo ""
 
 # ===========================================================================
+# PHASE 5: P0 ADVERSARIAL TESTS — Invariant Violation Fixes
+# ===========================================================================
+echo "--- PHASE 5: P0 Adversarial Tests ---"
+
+run_test "P0 Fix #1: Async FIFO CDC (show-ahead, overflow, reset)" \
+    tb/tb_p0_async_fifo.vvp \
+    tb/tb_p0_async_fifo.v cdc_modules.v
+
+run_test "P0 Fixes #2/#3/#4: Matched Filter (toggle, listen, overlap)" \
+    tb/tb_p0_mf_adversarial.vvp \
+    tb/tb_p0_mf_adversarial.v matched_filter_multi_segment.v
+
+run_test "P0 Fix #7: Frame Complete Pulse (falling-edge)" \
+    tb/tb_p0_frame_pulse.vvp \
+    tb/tb_p0_frame_pulse.v
+
+echo ""
+
+# ===========================================================================
 # SUMMARY
 # ===========================================================================
 TOTAL=$((PASS + FAIL + SKIP))

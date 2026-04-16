@@ -584,41 +584,59 @@ cic_decimator_4x_enhanced cic_q_inst (
 assign cic_valid = cic_valid_i & cic_valid_q;
 
 // ============================================================================
-// Enhanced FIR Filters with FIXED valid signal handling
-// NOTE: Wire declarations moved BEFORE CDC instances to fix forward-reference
-//       error in Icarus Verilog (was originally after CDC instantiation)
+// Clock Domain Crossing: 400 MHz CIC output → 100 MHz FIR input
+// ============================================================================
+// The CIC decimates 4:1, producing one sample per 4 clk_400m cycles (~100 MSPS).
+// The FIR runs at clk_100m (100 MHz). The two clocks have unknown phase
+// relationship, so a proper asynchronous FIFO with Gray-coded pointers is
+// required. The old cdc_adc_to_processing module Gray-encoded the sample
+// DATA which is invalid (Gray encoding only guarantees single-bit transitions
+// for monotonically incrementing counters, not arbitrary sample values).
+//
+// Depth 8 provides margin: worst case, 2 samples can be in flight before
+// the read side pops, well within a depth-8 budget.
 // ============================================================================
 wire fir_in_valid_i, fir_in_valid_q;
 wire fir_valid_i, fir_valid_q;
 wire fir_i_ready, fir_q_ready;
-wire [17:0] fir_d_in_i, fir_d_in_q; 
+wire [17:0] fir_d_in_i, fir_d_in_q;
 
-cdc_adc_to_processing #(
+// I-channel CDC: async FIFO, 400 MHz write → 100 MHz read
+cdc_async_fifo #(
     .WIDTH(18),
-    .STAGES(3)
-)CDC_FIR_i(
-    .src_clk(clk_400m),
-    .dst_clk(clk_100m),
-    .src_reset_n(reset_n_400m),
-    .dst_reset_n(reset_n),
-    .src_data(cic_i_out),
-    .src_valid(cic_valid_i),
-    .dst_data(fir_d_in_i),
-    .dst_valid(fir_in_valid_i)
+    .DEPTH(8),
+    .ADDR_BITS(3)
+) CDC_FIR_i (
+    .wr_clk(clk_400m),
+    .wr_reset_n(reset_n_400m),
+    .wr_data(cic_i_out),
+    .wr_en(cic_valid_i),
+    .wr_full(),   // At 1:1 data rate, overflow should not occur
+
+    .rd_clk(clk_100m),
+    .rd_reset_n(reset_n),
+    .rd_data(fir_d_in_i),
+    .rd_valid(fir_in_valid_i),
+    .rd_ack(fir_in_valid_i)   // Auto-pop: consume every valid sample
 );
 
-cdc_adc_to_processing #(
+// Q-channel CDC: async FIFO, 400 MHz write → 100 MHz read
+cdc_async_fifo #(
     .WIDTH(18),
-    .STAGES(3)
-)CDC_FIR_q(
-    .src_clk(clk_400m),
-    .dst_clk(clk_100m),
-    .src_reset_n(reset_n_400m),
-    .dst_reset_n(reset_n),
-    .src_data(cic_q_out),
-    .src_valid(cic_valid_q),
-    .dst_data(fir_d_in_q),
-    .dst_valid(fir_in_valid_q)
+    .DEPTH(8),
+    .ADDR_BITS(3)
+) CDC_FIR_q (
+    .wr_clk(clk_400m),
+    .wr_reset_n(reset_n_400m),
+    .wr_data(cic_q_out),
+    .wr_en(cic_valid_q),
+    .wr_full(),
+
+    .rd_clk(clk_100m),
+    .rd_reset_n(reset_n),
+    .rd_data(fir_d_in_q),
+    .rd_valid(fir_in_valid_q),
+    .rd_ack(fir_in_valid_q)
 );
 
 // ============================================================================

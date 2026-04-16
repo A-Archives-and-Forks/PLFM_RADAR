@@ -138,6 +138,145 @@ module cdc_adc_to_processing #(
 endmodule
 
 // ============================================================================
+// ASYNC FIFO FOR CONTINUOUS SAMPLE STREAMS
+// ============================================================================
+// Replaces cdc_adc_to_processing for the DDC path where the CIC decimator
+// produces samples at ~100 MSPS from a 400 MHz clock and the consumer runs
+// at 100 MHz. Gray-coded read/write pointers (the only valid use of Gray
+// encoding across clock domains) ensure no data corruption or loss.
+//
+// Depth must be a power of 2. Default 8 entries gives comfortable margin
+// for the 4:1 decimated stream (1 sample per 4 src clocks, 1 consumer
+// clock per sample).
+// ============================================================================
+module cdc_async_fifo #(
+    parameter WIDTH = 18,
+    parameter DEPTH = 8,            // Must be power of 2
+    parameter ADDR_BITS = 3         // log2(DEPTH)
+)(
+    // Write (source) domain
+    input  wire              wr_clk,
+    input  wire              wr_reset_n,
+    input  wire [WIDTH-1:0]  wr_data,
+    input  wire              wr_en,
+    output wire              wr_full,
+
+    // Read (destination) domain
+    input  wire              rd_clk,
+    input  wire              rd_reset_n,
+    output wire [WIDTH-1:0]  rd_data,
+    output wire              rd_valid,
+    input  wire              rd_ack     // Consumer asserts to pop
+);
+
+    // Gray code conversion functions
+    function [ADDR_BITS:0] bin2gray;
+        input [ADDR_BITS:0] bin;
+        bin2gray = bin ^ (bin >> 1);
+    endfunction
+
+    function [ADDR_BITS:0] gray2bin;
+        input [ADDR_BITS:0] gray;
+        reg [ADDR_BITS:0] bin;
+        integer k;
+    begin
+        bin[ADDR_BITS] = gray[ADDR_BITS];
+        for (k = ADDR_BITS-1; k >= 0; k = k - 1)
+            bin[k] = bin[k+1] ^ gray[k];
+        gray2bin = bin;
+    end
+    endfunction
+
+    // ------- Pointer declarations (both domains, before use) -------
+    // Write domain pointers
+    reg [ADDR_BITS:0] wr_ptr_bin  = 0;   // Extra bit for full/empty
+    reg [ADDR_BITS:0] wr_ptr_gray = 0;
+
+    // Read domain pointers (declared here so write domain can synchronize them)
+    reg [ADDR_BITS:0] rd_ptr_bin  = 0;
+    reg [ADDR_BITS:0] rd_ptr_gray = 0;
+
+    // ------- Write domain -------
+
+    // Synchronized read pointer in write domain (scalar regs, not memory
+    // arrays — avoids iverilog sensitivity/NBA bugs on array elements and
+    // gives synthesis explicit flop names for ASYNC_REG constraints)
+    (* ASYNC_REG = "TRUE" *) reg [ADDR_BITS:0] rd_ptr_gray_sync0 = 0;
+    (* ASYNC_REG = "TRUE" *) reg [ADDR_BITS:0] rd_ptr_gray_sync1 = 0;
+
+    // FIFO memory (inferred as distributed RAM — small depth)
+    reg [WIDTH-1:0] mem [0:DEPTH-1];
+
+    wire wr_addr_match = (wr_ptr_gray == rd_ptr_gray_sync1);
+    wire wr_wrap_match = (wr_ptr_gray[ADDR_BITS] != rd_ptr_gray_sync1[ADDR_BITS]) &&
+                         (wr_ptr_gray[ADDR_BITS-1] != rd_ptr_gray_sync1[ADDR_BITS-1]) &&
+                         (wr_ptr_gray[ADDR_BITS-2:0] == rd_ptr_gray_sync1[ADDR_BITS-2:0]);
+    assign wr_full = wr_wrap_match;
+
+    always @(posedge wr_clk) begin
+        if (!wr_reset_n) begin
+            wr_ptr_bin       <= 0;
+            wr_ptr_gray      <= 0;
+            rd_ptr_gray_sync0 <= 0;
+            rd_ptr_gray_sync1 <= 0;
+        end else begin
+            // Synchronize read pointer into write domain
+            rd_ptr_gray_sync0 <= rd_ptr_gray;
+            rd_ptr_gray_sync1 <= rd_ptr_gray_sync0;
+
+            // Write
+            if (wr_en && !wr_full) begin
+                mem[wr_ptr_bin[ADDR_BITS-1:0]] <= wr_data;
+                wr_ptr_bin  <= wr_ptr_bin + 1;
+                wr_ptr_gray <= bin2gray(wr_ptr_bin + 1);
+            end
+        end
+    end
+
+    // ------- Read domain -------
+
+    // Synchronized write pointer in read domain (scalar regs — see above)
+    (* ASYNC_REG = "TRUE" *) reg [ADDR_BITS:0] wr_ptr_gray_sync0 = 0;
+    (* ASYNC_REG = "TRUE" *) reg [ADDR_BITS:0] wr_ptr_gray_sync1 = 0;
+
+    wire rd_empty = (rd_ptr_gray == wr_ptr_gray_sync1);
+
+    // Output register — holds data until consumed
+    reg [WIDTH-1:0] rd_data_reg = 0;
+    reg rd_valid_reg = 0;
+
+    always @(posedge rd_clk) begin
+        if (!rd_reset_n) begin
+            rd_ptr_bin        <= 0;
+            rd_ptr_gray       <= 0;
+            wr_ptr_gray_sync0 <= 0;
+            wr_ptr_gray_sync1 <= 0;
+            rd_data_reg       <= 0;
+            rd_valid_reg      <= 0;
+        end else begin
+            // Synchronize write pointer into read domain
+            wr_ptr_gray_sync0 <= wr_ptr_gray;
+            wr_ptr_gray_sync1 <= wr_ptr_gray_sync0;
+
+            // Pop logic: present data when FIFO not empty
+            if (!rd_empty && (!rd_valid_reg || rd_ack)) begin
+                rd_data_reg <= mem[rd_ptr_bin[ADDR_BITS-1:0]];
+                rd_valid_reg <= 1'b1;
+                rd_ptr_bin  <= rd_ptr_bin + 1;
+                rd_ptr_gray <= bin2gray(rd_ptr_bin + 1);
+            end else if (rd_valid_reg && rd_ack) begin
+                // Consumer took data but FIFO is empty now
+                rd_valid_reg <= 1'b0;
+            end
+        end
+    end
+
+    assign rd_data  = rd_data_reg;
+    assign rd_valid = rd_valid_reg;
+
+endmodule
+
+// ============================================================================
 // CDC FOR SINGLE BIT SIGNALS
 // Uses synchronous reset on sync chain to avoid metastability on reset
 // deassertion. Matches cdc_adc_to_processing best practice.

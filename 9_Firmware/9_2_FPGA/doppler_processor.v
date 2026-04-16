@@ -531,6 +531,23 @@ xfft_16 fft_inst (
 // Status Outputs
 // ==============================================
 assign processing_active = (state != S_IDLE);
-assign frame_complete = (state == S_IDLE && frame_buffer_full == 0);
+
+// frame_complete must be a single-cycle pulse, not a level.
+// The AGC (rx_gain_control) uses this as frame_boundary to snapshot
+// per-frame metrics and update gain. If held high continuously,
+// the AGC would re-evaluate every clock with zeroed accumulators,
+// collapsing saturation_count/peak_magnitude to zero.
+//
+// Detect the falling edge of processing_active: the exact clock
+// when the Doppler processor finishes all sub-frame FFTs and
+// returns to S_IDLE with the frame buffer drained.
+reg processing_active_prev;
+always @(posedge clk or negedge reset_n) begin
+    if (!reset_n)
+        processing_active_prev <= 1'b0;
+    else
+        processing_active_prev <= processing_active;
+end
+assign frame_complete = (~processing_active & processing_active_prev);
 
 endmodule
